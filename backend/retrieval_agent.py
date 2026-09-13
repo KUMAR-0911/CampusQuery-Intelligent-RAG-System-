@@ -322,7 +322,8 @@ class RetrievalAgent:
 
         # Conversation turns for multi-turn awareness
         if conversation_context:
-            recent = conversation_context.get("recent_messages", [])
+            # The user requested exactly the last 2 user and 2 assistant messages (last 4 messages)
+            recent = conversation_context.get("recent_messages", [])[-4:]
             for m in recent:
                 role = m.get("role")
                 content = m.get("content", "")
@@ -339,15 +340,7 @@ class RetrievalAgent:
             f"{retrieved_context_str}\n\n"
             f"USER QUESTION: {question}\n\n"
             f"Instruction for reasoning and answer generation:\n"
-            f"Generate a thorough, professional, and well-structured answer based strictly on the retrieved document context.\n"
-            f"STRICT SYMBOL & SPACING CONSTRAINTS:\n"
-            f"1. Absolutely DO NOT use any asterisks anywhere. No bold text, no italic text, and no bullet points.\n"
-            f"2. Absolutely DO NOT use any hashtag, hash, or pound symbols anywhere. No markdown headers.\n"
-            f"3. Absolutely DO NOT use any double hyphens, dashes, or horizontal line dividers anywhere.\n"
-            f"4. Use plain UPPERCASE titles followed by a colon for section headings (for example: EXTRACTED COMPONENTS:).\n"
-            f"5. For lists, use standard numbers (1., 2., 3.) or plain sentences without bullet symbols.\n"
-            f"6. Keep output cleanly spaced and compact: do NOT insert unnecessary empty lines or multiple blank lines between list items.\n"
-            f"7. Absolutely DO NOT output any citation markers, chunk references (like [Document Chunk 1]), or source citations in the answer."
+            f"Generate a thorough, professional, and well-structured answer based strictly on the retrieved document context. Please strictly follow the format and rules specified in your system prompt."
         )
         messages.append(HumanMessage(content=user_message_content))
 

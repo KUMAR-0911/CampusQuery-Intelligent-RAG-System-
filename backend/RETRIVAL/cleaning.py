@@ -8,7 +8,7 @@ _EXCESS_WHITESPACE = re.compile(r"[ \t]+")
 _EXCESS_NEWLINES = re.compile(r"\n{3,}")
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, seen: set | None = None) -> str:
     """Normalise whitespace in *text* without removing or changing symbols and dedup sentence by sentence."""
     if not isinstance(text, str):
         raise TypeError("text must be a string")
@@ -17,7 +17,8 @@ def clean_text(text: str) -> str:
     
     lines = cleaned.split('\n')
     deduped_lines = []
-    seen = set()
+    if seen is None:
+        seen = set()
     
     for line in lines:
         # Split by sentence endings (.!?) followed by space
@@ -43,8 +44,9 @@ def clean_text(text: str) -> str:
 def clean_documents(documents: list[Document]) -> list[Document]:
     """Clean LangChain documents without discarding their loader metadata."""
     cleaned: list[Document] = []
+    global_seen = set()
     for document in documents:
-        text = clean_text(document.page_content)
+        text = clean_text(document.page_content, seen=global_seen)
         if text:
             cleaned.append(Document(page_content=text, metadata=dict(document.metadata)))
     print(f"[cleaning] Cleaned {len(cleaned)} non-empty document/page record(s).")

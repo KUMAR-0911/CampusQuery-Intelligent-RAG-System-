@@ -219,10 +219,7 @@ class AffindaResumeParser:
             if lines:
                 parts.append("LANGUAGES:\n" + "\n".join(lines))
 
-        # --- Raw text (full document text from Affinda) ---
-        raw = data.get("rawText") or ""
-        if raw.strip():
-            parts.append("FULL DOCUMENT TEXT:\n" + raw.strip())
+        # --- Raw text removed to prevent duplication ---
 
         text = "\n\n".join(parts)
         if not text.strip():

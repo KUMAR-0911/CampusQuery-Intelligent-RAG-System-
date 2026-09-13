@@ -193,7 +193,23 @@ Key environment variables:
 
 ## Running the Application
 
-### 1. Start the FastAPI Backend
+### Option A: Using Docker (Recommended)
+
+The easiest way to run the entire stack (Frontend and Backend) is using Docker Compose. **Using Docker means you do not need to manually install Node.js, Python, or create virtual environments** — everything is handled automatically inside the containers.
+
+```bash
+# Ensure your backend/.env file is configured correctly
+docker compose up --build
+```
+
+- **Frontend**: Available at `http://localhost:5173`
+- **Backend API**: Available at `http://localhost:8000`
+
+---
+
+### Option B: Manual Setup
+
+#### 1. Start the FastAPI Backend
 
 ```bash
 # Navigate to backend directory

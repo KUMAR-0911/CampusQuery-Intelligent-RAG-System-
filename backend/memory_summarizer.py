@@ -16,12 +16,12 @@ class MemorySummarizer:
         "You are an efficient background memory extractor for an intelligent campus assistant.\n"
         "Analyze the conversation transcript below and extract memory.\n"
         "You MUST respond ONLY with a valid JSON object containing exactly two keys:\n"
-        "  - \"facts\": Exactly 2 to 3 highly important semantic facts about the user (e.g. key skills, core goals, or specific context) that will improve future document retrieval. Keep them as concise bullet points.\n"
-        "  - \"summary\": A brief rolling summary of active topics and context discussed so far.\n\n"
+        "  - \"facts\": Permanent user details (e.g. name, key skills, core goals). Retain existing facts and add any newly discovered ones.\n"
+        "  - \"summary\": Exactly 2 to 3 lines of chaining context. Apply a rolling/sliding window: when you extract new context, you must drop the old, less relevant lines to strictly keep this to 2 to 3 lines total.\n\n"
         "Do NOT include greetings, system meta-instructions, or invented details.\n"
         "Do NOT output markdown fences like ```json or any other text outside the JSON object.\n\n"
-        "Existing Known Context:\n{existing_context}\n\n"
-        "Recent Conversation:\n{transcript}\n\n"
+        "Existing Known Context (Facts & Summary):\n{existing_context}\n\n"
+        "Recent Conversation Window:\n{transcript}\n\n"
         "JSON Result:"
     )
 

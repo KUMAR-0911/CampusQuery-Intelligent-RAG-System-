@@ -181,14 +181,18 @@ class PostgresMemory:
             )
             
     def clear_chat(self, user_id: str) -> None:
-        """Delete all conversation messages for a user, keeping durable semantic memory intact."""
+        """Delete all conversation messages and semantic memory for a user to start completely fresh."""
         uid = user_id.strip()
         with self.engine.begin() as conn:
             conn.execute(
                 text("DELETE FROM conversation_messages WHERE user_id = :uid"),
                 {"uid": uid},
             )
-        print(f"[postgres] Cleared chat history for user '{uid}'. Semantic memory retained.")
+            conn.execute(
+                text("DELETE FROM user_memories WHERE user_id = :uid"),
+                {"uid": uid},
+            )
+        print(f"[postgres] Cleared chat history and semantic memory for user '{uid}'.")
 
     # ------------------------------------------------------------------
     # Memory compaction
@@ -202,13 +206,13 @@ class PostgresMemory:
         """
         uid = user_id.strip()
 
-        # 1. Load all messages for transcript
+        # 1. Load uncompacted messages (sliding window) for transcript
         with self.engine.connect() as conn:
             rows = (
                 conn.execute(
                     text(
                         "SELECT id, role, content FROM conversation_messages "
-                        "WHERE user_id = :uid ORDER BY id ASC"
+                        "WHERE user_id = :uid AND is_compacted = FALSE ORDER BY id ASC"
                     ),
                     {"uid": uid},
                 )

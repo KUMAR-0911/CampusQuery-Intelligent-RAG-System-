@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
-load_dotenv() # Fallback to current dir
+load_dotenv(dotenv_path=env_path, override=True)
+load_dotenv(override=True) # Fallback to current dir
 
 
 @dataclass(frozen=True)
