@@ -1,0 +1,35 @@
+services:
+  # -----------------------------------------
+  # 1. FastAPI Backend Service
+  # -----------------------------------------
+  - type: web
+    name: campusquery-backend
+    env: docker
+    rootDir: backend
+    envVars:
+      # Sync: false means Render will prompt you to type these in securely
+      # when you create the Blueprint!
+      - key: POSTGRES_URL
+        sync: false
+      - key: PORTKEY_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      # You can add more keys here if needed, or add them in the dashboard later
+
+  # -----------------------------------------
+  # 2. React + Vite Frontend Service
+  # -----------------------------------------
+  - type: web
+    name: campusquery-frontend
+    env: docker
+    rootDir: frontend
+    envVars:
+      # Automatically points the frontend to the backend's public Render URL!
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: campusquery-backend
+          envVarKey: RENDER_EXTERNAL_URL
