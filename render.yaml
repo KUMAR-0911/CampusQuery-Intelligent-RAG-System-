@@ -18,6 +18,10 @@ services:
         sync: false
       - key: JWT_SECRET_KEY
         sync: false
+      - key: AFFINDA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       # You can add more keys here if needed, or add them in the dashboard later
 
   # -----------------------------------------
