@@ -8,11 +8,11 @@ services:
     rootDir: backend
     plan: free
     envVars:
-      # Sync: false means Render will prompt you to type these in securely
-      # when you create the Blueprint!
       - key: POSTGRES_URL
         sync: false
       - key: PORTKEY_API_KEY
+        sync: false
+      - key: PORTKEY_CONFIG_SLUG
         sync: false
       - key: HF_TOKEN
         sync: false
@@ -21,6 +21,18 @@ services:
       - key: AFFINDA_API_KEY
         sync: false
       - key: GROQ_API_KEY
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        sync: false
+      - key: SMTP_SERVER
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
         sync: false
       # You can add more keys here if needed, or add them in the dashboard later
 
