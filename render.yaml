@@ -6,6 +6,7 @@ services:
     name: campusquery-backend
     env: docker
     rootDir: backend
+    plan: free
     envVars:
       # Sync: false means Render will prompt you to type these in securely
       # when you create the Blueprint!
@@ -26,6 +27,7 @@ services:
     name: campusquery-frontend
     env: docker
     rootDir: frontend
+    plan: free
     envVars:
       # Automatically points the frontend to the backend's public Render URL!
       - key: VITE_API_URL
