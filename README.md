@@ -62,7 +62,7 @@ An **Agentic Hybrid-RAG** (Retrieval-Augmented Generation) system for career and
 - **API Framework**: FastAPI + Uvicorn
 - **Auth**: JWT Tokens (HttpOnly cookies), Argon2 / Bcrypt hashing
 - **Document Processing**: Affinda AI Document & Resume Parser API (with high-fidelity local fallback for PDF, DOCX, TXT, MD)
-- **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2`
+- **Embeddings**: `BAAI/bge-small-en-v1.5`
 - **Vector Database**: PostgreSQL (`pgvector`)
 - **Reranker**: `cross-encoder/ms-marco-MiniLM-L-6-v2` (Cross-encoder reranker)
 - **Reasoning Model**: `qwen3:32b-a3b` (`qwen/qwen3-30b-a3b`) via Portkey
@@ -118,7 +118,7 @@ CampusQuery-Intelligent-RAG-System/
 
 When the backend application starts (`uvicorn main:app`), **all AI models are pre-loaded immediately** during startup (`lifespan` handler) to prevent first-query latency:
 
-1. **Dense Embedding Model**: `sentence-transformers/all-MiniLM-L6-v2`
+1. **Dense Embedding Model**: `BAAI/bge-small-en-v1.5`
 2. **Cross-Encoder Reranker**: `cross-encoder/ms-marco-MiniLM-L-6-v2`
 3. **Guardrails Model**: `meta-llama/Llama-3.1-8B-Instruct` (Provider: `featherless-ai`)
 4. **Query Rewriter & Intent Classifier**: `Qwen/Qwen3-0.6B` (Provider: `featherless-ai`)
@@ -178,6 +178,7 @@ Key environment variables:
 | `RESUME_ANALYSER_GUARDRAIL_PROMPT` | Safety & relevance classification prompt for guardrails |
 | `QUERY_REWRITER_PROMPT` | Context-aware query expansion & intent classification prompt |
 | `MEMORY_EXTRACTION_PROMPT` | Asynchronous background memory compaction & factual extraction prompt |
+| `LOGFIRE_TOKEN` | Write token from Pydantic Logfire dashboard for backend telemetry |
 
 ### 2. Frontend Configuration (`/frontend/.env`)
 
