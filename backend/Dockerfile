@@ -24,8 +24,8 @@ ENV HF_HOME=/model_cache/huggingface
 ENV FASTEMBED_CACHE_PATH=/model_cache/fastembed
 RUN python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2', cache_dir=os.getenv('FASTEMBED_CACHE_PATH'))"
 
-# Force offline mode during runtime so it NEVER tries to re-download and spike RAM
-ENV HF_HUB_OFFLINE=1
+# Since we are using the remote Inference API now, we MUST allow internet access!
+# (Removed HF_HUB_OFFLINE to allow the API to connect)
 
 EXPOSE 8000
 
