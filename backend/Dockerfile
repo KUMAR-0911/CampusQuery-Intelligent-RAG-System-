@@ -28,5 +28,6 @@ ENV OPENBLAS_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
+ENV RERANKER_MODEL="cross-encoder/ms-marco-TinyBERT-L-2-v2"
 # Run the FastAPI application using Uvicorn with dynamic port
 CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"
