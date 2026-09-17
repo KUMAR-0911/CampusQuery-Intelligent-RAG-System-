@@ -19,10 +19,8 @@ def get_db_engine() -> Engine:
         url,
         pool_pre_ping=True,
         pool_recycle=300,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=5,
     )
-    import logfire
-    logfire.instrument_sqlalchemy(engine)
     return engine
 

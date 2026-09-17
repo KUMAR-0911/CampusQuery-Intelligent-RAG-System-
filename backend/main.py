@@ -109,9 +109,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Resume & Career Analyzer Toolkit API", version="1.0.0", lifespan=lifespan)
 
-import logfire
-logfire.configure()
-logfire.instrument_fastapi(app)
+
 
 
 
