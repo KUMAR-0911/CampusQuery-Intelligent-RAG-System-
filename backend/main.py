@@ -319,15 +319,15 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="lax",
-        secure=False,  # Set to True in production with HTTPS
+        samesite="none",
+        secure=True,  # Set to True in production with HTTPS
     )
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        samesite="lax",
-        secure=False,
+        samesite="none",
+        secure=True,
     )
     
     return {"message": "Login successful", "user": {"email": user["email"], "role": user["role"], "status": user["status"]}}
@@ -391,8 +391,8 @@ def refresh_token(request: Request, response: Response, um: UserManager = Depend
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="lax",
-        secure=False,
+        samesite="none",
+        secure=True,
     )
     return {"message": "Token refreshed"}
 
