@@ -39,7 +39,7 @@ class PgVectorStore:
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:
-            raise ImportError("Install sentence-transformers.") from exc
+            raise ImportError("Install sentence-transformers for the CrossEncoder reranker.") from exc
             
         self.config = config
         self.engine = engine or get_db_engine()
