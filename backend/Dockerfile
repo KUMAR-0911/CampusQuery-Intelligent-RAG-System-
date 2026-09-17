@@ -19,6 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the backend application code
 COPY . .
 
+# Pre-download ML models during the build phase to prevent RAM spikes on startup
+ENV HF_HOME=/app/.cache
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2')"
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-TinyBERT-L-2-v2')"
+
 EXPOSE 8000
 
 ENV MALLOC_ARENA_MAX=2
