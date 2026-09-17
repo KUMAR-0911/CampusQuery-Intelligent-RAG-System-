@@ -24,10 +24,8 @@ class SentenceTransformerEmbedder:
             
             print(f"[embedding] Using remote Hugging Face Inference API for model: {config.embedding_model}")
             client_kwargs = {"model": config.embedding_model, "token": config.hf_token}
-            provider = getattr(config, "hf_inference_provider", "featherless-ai")
-            if provider:
-                print(f"[embedding] Using inference provider: {provider}")
-                client_kwargs["provider"] = provider
+            # Explicitly force huggingface API for embeddings since bge-small is supported natively
+            client_kwargs["provider"] = "hf-inference"
             self.client = InferenceClient(**client_kwargs)
         else:
             try:

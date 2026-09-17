@@ -22,5 +22,7 @@ def get_db_engine() -> Engine:
         pool_size=10,
         max_overflow=20,
     )
+    import logfire
+    logfire.instrument_sqlalchemy(engine)
     return engine
 

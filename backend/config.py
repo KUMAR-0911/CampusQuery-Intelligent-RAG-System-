@@ -17,7 +17,7 @@ class RetrievalConfig:
     """
 
     embedding_model: str = os.getenv(
-        "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+        "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"
     )
     hf_token: str | None = os.getenv("HF_TOKEN")
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "384"))
