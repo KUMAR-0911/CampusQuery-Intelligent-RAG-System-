@@ -205,37 +205,39 @@ class PgVectorStore:
         hf_token = self.config.hf_token
         # Try HF Inference API first if token is available
         if hf_token:
-            import requests
-            url = f"https://api-inference.huggingface.co/models/{self.config.reranker_model}"
-            headers = {"Authorization": f"Bearer {hf_token}"}
-            payload = {
-                "inputs": [{"text": pair[0], "text_pair": pair[1]} for pair in rerank_pairs]
-            }
             print(f"[vectorstore] Calling HF Inference API for reranking with {self.config.reranker_model}...")
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=15)
-                if response.status_code == 200:
-                    api_result = response.json()
-                    # HF API can return list of floats or list of dicts
-                    if isinstance(api_result, list):
-                        for item in api_result:
-                            if isinstance(item, float) or isinstance(item, int):
-                                rerank_scores.append(float(item))
-                            elif isinstance(item, dict) and "score" in item:
-                                # Sometimes it's a nested list of dicts: [[{"label":..., "score":...}]]
-                                rerank_scores.append(float(item["score"]))
-                            elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict) and "score" in item[0]:
-                                rerank_scores.append(float(item[0]["score"]))
-                            else:
-                                rerank_scores.append(0.0)
-                    else:
-                        print(f"[vectorstore] Unexpected HF API response format: {api_result}")
-                        rerank_scores = [0.0] * len(rows)
+                from huggingface_hub import InferenceClient
+                import json
+                
+                client_kwargs = {"model": self.config.reranker_model, "token": hf_token}
+                if hasattr(self.config, "reranker_inference_provider") and self.config.reranker_inference_provider:
+                    client_kwargs["provider"] = self.config.reranker_inference_provider
+                
+                client = InferenceClient(**client_kwargs)
+                payload = {
+                    "inputs": [{"text": pair[0], "text_pair": pair[1]} for pair in rerank_pairs]
+                }
+                
+                response_bytes = client.post(json=payload)
+                api_result = json.loads(response_bytes.decode("utf-8"))
+                
+                # HF API can return list of floats or list of dicts
+                if isinstance(api_result, list):
+                    for item in api_result:
+                        if isinstance(item, float) or isinstance(item, int):
+                            rerank_scores.append(float(item))
+                        elif isinstance(item, dict) and "score" in item:
+                            rerank_scores.append(float(item["score"]))
+                        elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict) and "score" in item[0]:
+                            rerank_scores.append(float(item[0]["score"]))
+                        else:
+                            rerank_scores.append(0.0)
                 else:
-                    print(f"[vectorstore] HF API Error {response.status_code}: {response.text}")
+                    print(f"[vectorstore] Unexpected HF API response format: {api_result}")
                     rerank_scores = [0.0] * len(rows)
             except Exception as e:
-                print(f"[vectorstore] HF API request failed: {e}")
+                print(f"[vectorstore] HF InferenceClient request failed: {e}")
                 rerank_scores = [0.0] * len(rows)
         else:
             # Fallback to local CrossEncoder if no HF_TOKEN

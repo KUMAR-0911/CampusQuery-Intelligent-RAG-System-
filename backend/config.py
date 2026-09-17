@@ -36,9 +36,9 @@ class RetrievalConfig:
     hnsw_ef_construct: int = int(os.getenv("HNSW_EF_CONSTRUCT", "100"))
     hnsw_ef_search: int = int(os.getenv("HNSW_EF_SEARCH", "128"))
     reranker_model: str = os.getenv(
-        "RERANKER_MODEL",
-        os.getenv("BGE_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
+        "RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
     )
+    reranker_inference_provider: str | None = os.getenv("RERANKER_INFERENCE_PROVIDER")
     portkey_api_key: str | None = os.getenv("PORTKEY_API_KEY")
     portkey_config_slug: str | None = os.getenv("PORTKEY_CONFIG_SLUG")
     groq_api_key: str | None = os.getenv("GROQ_API_KEY")
