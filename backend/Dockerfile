@@ -20,9 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Pre-download ML models during the build phase to prevent RAM spikes on startup
-ENV HF_HOME=/app/.cache
+ENV HF_HOME=/app/.cache/huggingface
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2')"
-RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-TinyBERT-L-2-v2')"
 
 EXPOSE 8000
 
@@ -33,6 +33,6 @@ ENV OPENBLAS_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
-ENV RERANKER_MODEL="cross-encoder/ms-marco-TinyBERT-L-2-v2"
+ENV RERANKER_MODEL=""
 # Run the FastAPI application using Uvicorn with dynamic port
 CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"
