@@ -7,8 +7,6 @@ pyjwt
 python-multipart
 requests
 pypdf
-fastembed
-sentence-transformers
 langchain
 langchain-core
 langchain-text-splitters
@@ -22,4 +20,4 @@ sqlalchemy
 pgvector
 argon2-cffi
 email-validator
-logfire[system-metrics,fastapi,sqlalchemy,psycopg]
+logfire[system-metrics,fastapi,sqlalchemy,psycopg]
