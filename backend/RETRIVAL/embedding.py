@@ -18,7 +18,12 @@ class SentenceTransformerEmbedder:
             raise ImportError("Install fastembed with pip install -r requirements.txt") from exc
         self.config = config
         print(f"[embedding] Loading model: {config.embedding_model}")
-        self.model = TextEmbedding(model_name=config.embedding_model)
+        import os
+        cache_dir = os.getenv("FASTEMBED_CACHE_PATH")
+        if cache_dir:
+            self.model = TextEmbedding(model_name=config.embedding_model, cache_dir=cache_dir)
+        else:
+            self.model = TextEmbedding(model_name=config.embedding_model)
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """Create normalized vector embeddings for a sequence of texts."""
