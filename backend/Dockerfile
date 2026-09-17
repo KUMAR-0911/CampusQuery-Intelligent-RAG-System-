@@ -20,9 +20,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Pre-download ML models during the build phase to prevent RAM spikes on startup
-ENV HF_HOME=/app/.cache/huggingface
-ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed
+ENV HF_HOME=/model_cache/huggingface
+ENV FASTEMBED_CACHE_PATH=/model_cache/fastembed
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2')"
+
+# Force offline mode during runtime so it NEVER tries to re-download and spike RAM
+ENV HF_HUB_OFFLINE=1
 
 EXPOSE 8000
 
