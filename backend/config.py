@@ -39,10 +39,6 @@ class RetrievalConfig:
         "RERANKER_MODEL",
         os.getenv("BGE_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
     )
-    bge_reranker_model: str = os.getenv(
-        "RERANKER_MODEL",
-        os.getenv("BGE_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
-    )
     portkey_api_key: str | None = os.getenv("PORTKEY_API_KEY")
     portkey_config_slug: str | None = os.getenv("PORTKEY_CONFIG_SLUG")
     groq_api_key: str | None = os.getenv("GROQ_API_KEY")
