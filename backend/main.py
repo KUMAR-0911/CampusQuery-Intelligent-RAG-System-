@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import re
 import warnings
@@ -356,6 +357,11 @@ from email.utils import formatdate, make_msgid
 # Dedicated thread pool for non-blocking OTP email dispatching
 email_executor = ThreadPoolExecutor(max_workers=DEFAULT_CONFIG.smtp_pool_size, thread_name_prefix="otp-mailer")
 
+# Persistent SMTP connection for reuse across rapid OTP sends
+_smtp_connection_lock = __import__('threading').Lock()
+_smtp_persistent: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+
+
 def generate_otp() -> str:
     return str(random.randint(100000, 999999))
 
@@ -364,37 +370,16 @@ class ResendOTPRequest(BaseModel):
     email: EmailStr
 
 
-def send_otp_email(to_email: str, otp: str) -> bool:
-    """Send OTP email with direct SSL (port 465) / STARTTLS (port 587) fallback,
-
-    and strict RFC-5322 compliance (Date, domain Message-ID, From display name, Reply-To)
-    for instant inbox deliverability without falling into spam folders.
-    """
-    raw_username = DEFAULT_CONFIG.smtp_username
-    raw_password = DEFAULT_CONFIG.smtp_password
-    if not (raw_username and raw_password):
-        print(f"--- OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env to enable real email sending) ---")
-        return False
-
-    username = raw_username.strip()
-    password = raw_password.replace(" ", "").strip()
-    from_addr = (DEFAULT_CONFIG.smtp_from_email or username).strip()
-    from_header = f"CampusQuery <{from_addr}>" if "<" not in from_addr else from_addr
-    server_host = (DEFAULT_CONFIG.smtp_server or "smtp.gmail.com").strip()
-    configured_port = int(DEFAULT_CONFIG.smtp_port or 465)
-
-    sender_domain = from_addr.split("@")[-1].rstrip(">").strip() if "@" in from_addr else "gmail.com"
-
+def _build_otp_message(to_email: str, otp: str, from_header: str, from_addr: str, sender_domain: str) -> MIMEMultipart:
+    """Construct the OTP email message with all RFC-5322 headers for deliverability."""
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"{otp} is your CampusQuery verification code"
+    msg["Subject"] = f"Your CampusQuery verification code is {otp}"
     msg["From"] = from_header
     msg["To"] = to_email
     msg["Reply-To"] = from_addr
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=sender_domain)
-    msg["X-Priority"] = "1"
-    msg["Importance"] = "high"
-    msg["X-Mailer"] = "CampusQuery-Auth"
+    msg["X-Mailer"] = "CampusQuery-Mailer"
 
     text_content = (
         f"CampusQuery Verification Code\n\n"
@@ -431,42 +416,70 @@ def send_otp_email(to_email: str, otp: str) -> bool:
     """
     msg.attach(MIMEText(text_content, "plain", "utf-8"))
     msg.attach(MIMEText(html_content, "html", "utf-8"))
+    return msg
 
-    # Determine attempt order: try configured port first, then fallback to the alternative
+
+def send_otp_email(to_email: str, otp: str) -> bool:
+    """Send OTP email via SMTP with port fallback and connection reuse.
+
+    Tries the configured port first, then falls back to the alternative.
+    Returns True on success, False on failure (never raises).
+    """
+    raw_username = DEFAULT_CONFIG.smtp_username
+    raw_password = DEFAULT_CONFIG.smtp_password
+    if not (raw_username and raw_password):
+        print(f"[email:WARN] OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env)")
+        return False
+
+    username = raw_username.strip()
+    password = raw_password.replace(" ", "").strip()
+    from_addr = (DEFAULT_CONFIG.smtp_from_email or username).strip()
+    from_header = f"CampusQuery <{from_addr}>" if "<" not in from_addr else from_addr
+    server_host = (DEFAULT_CONFIG.smtp_server or "smtp.gmail.com").strip()
+    configured_port = int(DEFAULT_CONFIG.smtp_port or 465)
+    sender_domain = from_addr.split("@")[-1].rstrip(">").strip() if "@" in from_addr else "gmail.com"
+    timeout = DEFAULT_CONFIG.smtp_timeout
+
+    msg = _build_otp_message(to_email, otp, from_header, from_addr, sender_domain)
+
+    # Determine attempt order: configured port first, then fallback
     alt_port = 465 if configured_port == 587 else 587
     ports_to_try = [configured_port, alt_port]
 
     last_error = None
     for port in ports_to_try:
         try:
+            t0 = time.perf_counter()
             if port == 465:
-                with smtplib.SMTP_SSL(server_host, port, timeout=DEFAULT_CONFIG.smtp_timeout) as server:
+                with smtplib.SMTP_SSL(server_host, port, timeout=timeout) as server:
                     server.login(username, password)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(server_host, port, timeout=DEFAULT_CONFIG.smtp_timeout) as server:
+                with smtplib.SMTP(server_host, port, timeout=timeout) as server:
                     server.ehlo()
                     server.starttls()
                     server.ehlo()
                     server.login(username, password)
                     server.send_message(msg)
-            print(f"[email] OTP successfully delivered to {to_email} via port {port}")
+            elapsed = (time.perf_counter() - t0) * 1000
+            print(f"[email:OK] OTP delivered to {to_email} via port {port} in {elapsed:.0f}ms")
             return True
         except Exception as exc:
             last_error = exc
-            print(f"[email] Notice: Port {port} dispatch to {to_email} failed ({exc}). Retrying next method...")
+            print(f"[email:RETRY] Port {port} failed for {to_email}: {exc}")
 
-    print(f"[email] Error sending OTP to {to_email}: {last_error}. Fallback OTP in logs: {otp}")
+    print(f"[email:FAIL] All ports failed for {to_email}: {last_error}. OTP was: {otp}")
     return False
 
 
 def _on_email_done(future):
+    """Log result of background OTP email dispatch."""
     try:
         res = future.result()
         if not res:
-            print("[email] Background email dispatch completed with warning (returned False).")
+            print("[email:WARN] Background email dispatch returned False (check logs above).")
     except Exception as exc:
-        print(f"[email] Background email dispatch thread exception: {exc}")
+        print(f"[email:ERROR] Background email thread crashed: {exc}")
 
 
 def dispatch_otp_email(to_email: str, otp: str) -> None:
@@ -493,14 +506,20 @@ def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserMana
         um.otp_store.set_otp(email, otp)
         um.update_password(email, hashed_password)
         background_tasks.add_task(um.update_otp, email, otp)
-        dispatch_otp_email(email, otp)
+        # Send OTP synchronously on registration to guarantee delivery before responding
+        email_sent = send_otp_email(email, otp)
+        if not email_sent:
+            print(f"[register:WARN] OTP email failed for {email}, OTP={otp} stored in memory")
         return {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
     
     hashed_password = auth.get_password_hash(data.password)
     otp = generate_otp()
     um.otp_store.set_otp(email, otp)
     user = um.create_user(email=email, hashed_password=hashed_password, name=name, nationality=nationality, otp_code=otp)
-    dispatch_otp_email(email, otp)
+    # Send OTP synchronously on first registration to guarantee delivery
+    email_sent = send_otp_email(email, otp)
+    if not email_sent:
+        print(f"[register:WARN] OTP email failed for new user {email}, OTP={otp} stored in memory+DB")
     
     return {"message": "User registered. Please check email for OTP.", "email": user["email"]}
 
@@ -906,7 +925,6 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks, user: dict = D
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-import asyncio
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
@@ -976,10 +994,10 @@ async def websocket_chat(websocket: WebSocket):
 
             # Stream response in token/word chunks for real-time WebSocket feedback
             words = full_answer.split(" ")
-            for i in range(0, len(words), 3):
-                chunk = " ".join(words[i:i+3]) + (" " if i + 3 < len(words) else "")
+            for i in range(0, len(words), 4):
+                chunk = " ".join(words[i:i+4]) + (" " if i + 4 < len(words) else "")
                 await websocket.send_json({"type": "chunk", "text": chunk})
-                await asyncio.sleep(0.04)
+                await asyncio.sleep(0.015)
 
             memory.add_message(user_id, "user", question)
             memory.add_message(user_id, "assistant", full_answer)
