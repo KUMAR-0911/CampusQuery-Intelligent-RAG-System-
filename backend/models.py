@@ -180,18 +180,22 @@ class UserManager:
     def get_latency_metrics(self, hours: int = 24) -> dict[str, Any]:
         """Compute P50, P95, P99 percentiles, endpoint breakdown, and user stats."""
         with self.engine.connect() as conn:
-            # Global percentiles & summary
+            # Global summary metrics including P50/P95/P99, traffic load, error rate & active users
             global_res = conn.execute(
                 text(
                     """
                     SELECT 
                         COUNT(*) as total_requests,
-                        COALESCE(ROUND(AVG(duration_ms)::numeric, 2), 0) as avg_ms,
-                        COALESCE(ROUND(MIN(duration_ms)::numeric, 2), 0) as min_ms,
-                        COALESCE(ROUND(MAX(duration_ms)::numeric, 2), 0) as max_ms,
-                        COALESCE(ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p50_ms,
-                        COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p95_ms,
-                        COALESCE(ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p99_ms
+                        COALESCE(ROUND(COUNT(*)::numeric / GREATEST((:hours * 60.0), 1.0), 2), 0) as requests_per_minute,
+                        COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE status_code < 400)::numeric / GREATEST(COUNT(*), 1), 2), 100.0) as success_rate_percent,
+                        COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE status_code >= 400)::numeric / GREATEST(COUNT(*), 1), 2), 0.0) as error_rate_percent,
+                        COUNT(DISTINCT user_email) FILTER (WHERE user_email IS NOT NULL AND user_email != 'anonymous') as active_users,
+                        COALESCE(ROUND(AVG(duration_ms)::numeric, 2), 0) as avg_latency_ms,
+                        COALESCE(ROUND(MIN(duration_ms)::numeric, 2), 0) as min_latency_ms,
+                        COALESCE(ROUND(MAX(duration_ms)::numeric, 2), 0) as max_latency_ms,
+                        COALESCE(ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p50_latency_ms,
+                        COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p95_latency_ms,
+                        COALESCE(ROUND(percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::numeric, 2), 0) as p99_latency_ms
                     FROM api_metrics
                     WHERE created_at >= NOW() - (:hours || ' hour')::interval
                     """
@@ -261,9 +265,22 @@ class UserManager:
                 {"hours": hours},
             ).mappings().all()
 
+            summary_dict = dict(global_res) if global_res else {}
+            kpis = {
+                "total_requests": summary_dict.get("total_requests", 0),
+                "requests_per_min": summary_dict.get("requests_per_minute", 0.0),
+                "success_rate": f"{summary_dict.get('success_rate_percent', 100.0)}%",
+                "error_rate": f"{summary_dict.get('error_rate_percent', 0.0)}%",
+                "p50_latency_ms": summary_dict.get("p50_latency_ms", 0.0),
+                "p95_latency_ms": summary_dict.get("p95_latency_ms", 0.0),
+                "p99_latency_ms": summary_dict.get("p99_latency_ms", 0.0),
+                "active_users": summary_dict.get("active_users", 0),
+            }
+
             return {
                 "time_window_hours": hours,
-                "global_percentiles": dict(global_res) if global_res else {},
+                "kpi_metrics": kpis,
+                "global_summary": summary_dict,
                 "by_endpoint": [dict(r) for r in endpoints_res],
                 "by_user": [dict(r) for r in users_res],
                 "slowest_recent_requests": [
