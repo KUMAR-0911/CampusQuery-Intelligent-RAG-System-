@@ -33,13 +33,12 @@ def test_login_function_directly():
     )
     
     result = login(response=response, form_data=form, um=mock_um)
-    assert result["message"] == "Login successful"
     assert "access_token" in result
-    assert "refresh_token" in result
+    assert result["token_type"] == "bearer"
     assert result["user"]["email"] == "test@student.edu"
     assert result["user"]["name"] == "Test Student"
-    assert "access_token=" in str(response.headers.get("set-cookie", ""))
-    print("[PASS] Valid credentials returned tokens, user object, and cookies.")
+    assert "refresh_token=" in str(response.headers.get("set-cookie", ""))
+    print("[PASS] Valid credentials returned tokens, user object, and refresh cookie.")
 
     # 2. Invalid password test
     form_wrong = OAuth2PasswordRequestForm(

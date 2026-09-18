@@ -56,10 +56,11 @@ def create_refresh_token(data: dict[str, Any], expires_delta: timedelta | None =
 
 def decode_access_token(token: str, expected_type: str = "access") -> dict[str, Any] | None:
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], leeway=60)
         # Optional: check if the token type matches if it was provided
         if payload.get("type") and payload.get("type") != expected_type:
             return None
         return payload
     except jwt.PyJWTError:
         return None
+
