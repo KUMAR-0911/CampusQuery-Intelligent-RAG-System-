@@ -94,8 +94,8 @@ def get_resources() -> tuple[PgVectorStore, RetrievalAgent, PostgresMemory, Memo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Pre-load all models, Affinda extractor, chunker, reranker, and agent synchronously before accepting traffic."""
-    print("[startup] Pre-loading all backend models, Affinda Extractor, Embedder, and Cross-Encoder reranker...")
+    """Initialize resources and API clients. All ML inference runs via cloud APIs."""
+    print("[startup] Initializing backend resources (all ML inference via HF cloud APIs)...")
     try:
         store, agent, memory, summarizer, user_manager, guardrails = get_resources()
         get_affinda_extractor()

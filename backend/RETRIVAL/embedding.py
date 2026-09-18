@@ -1,44 +1,28 @@
-"""FastEmbed or InferenceClient embedding generation."""
+"""HuggingFace Inference API embedding generation."""
 
 from __future__ import annotations
 
 from typing import Sequence
-import os
 
 from langchain_core.documents import Document
 from config import RetrievalConfig
 
 
 class SentenceTransformerEmbedder:
-    """Reusable wrapper around FastEmbed or HuggingFace API for embeddings."""
+    """Wrapper around HuggingFace Inference API for embeddings."""
     def __init__(self, config: RetrievalConfig) -> None:
-        """Initialize the embedder, using remote API if token is present, else local FastEmbed."""
+        """Initialize the embedder using HF Inference API."""
         self.config = config
-        self.is_remote = bool(config.hf_token)
         
-        if self.is_remote:
-            try:
-                from huggingface_hub import InferenceClient
-            except ImportError as exc:
-                raise ImportError("Install huggingface_hub with pip install -r requirements.txt") from exc
-            
-            print(f"[embedding] Using remote Hugging Face Inference API for model: {config.embedding_model}")
-            client_kwargs = {"model": config.embedding_model, "token": config.hf_token}
-            # Explicitly force huggingface API for embeddings since bge-small is supported natively
-            client_kwargs["provider"] = "hf-inference"
-            self.client = InferenceClient(**client_kwargs)
-        else:
-            try:
-                from fastembed import TextEmbedding
-            except ImportError as exc:
-                raise ImportError("Install fastembed with pip install -r requirements.txt") from exc
-            
-            print(f"[embedding] Loading local model: {config.embedding_model}")
-            cache_dir = os.getenv("FASTEMBED_CACHE_PATH")
-            if cache_dir:
-                self.model = TextEmbedding(model_name=config.embedding_model, cache_dir=cache_dir)
-            else:
-                self.model = TextEmbedding(model_name=config.embedding_model)
+        if not config.hf_token:
+            raise ValueError("HF_TOKEN is required — all embeddings run via HF Inference API.")
+        
+        from huggingface_hub import InferenceClient
+        
+        print(f"[embedding] Using remote Hugging Face Inference API for model: {config.embedding_model}")
+        client_kwargs = {"model": config.embedding_model, "token": config.hf_token}
+        client_kwargs["provider"] = "hf-inference"
+        self.client = InferenceClient(**client_kwargs)
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """Create normalized vector embeddings for a sequence of texts."""
@@ -46,14 +30,10 @@ class SentenceTransformerEmbedder:
             return []
             
         print(f"[embedding] Generating embeddings for {len(texts)} text(s).")
-        if self.is_remote:
-            vectors = self.client.feature_extraction(list(texts)).tolist()
-            if len(texts) == 1 and isinstance(vectors[0], float):
-                 vectors = [vectors]
-            return vectors
-        else:
-            vectors_gen = self.model.embed(list(texts), batch_size=self.config.embedding_batch_size)
-            return [v.tolist() for v in vectors_gen]
+        vectors = self.client.feature_extraction(list(texts)).tolist()
+        if len(texts) == 1 and isinstance(vectors[0], float):
+             vectors = [vectors]
+        return vectors
 
     def embed_documents(self, documents: Sequence[Document]) -> list[list[float]]:
         """Embed chunk text only; ``Document.metadata`` is never embedded."""

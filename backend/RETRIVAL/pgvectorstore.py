@@ -1,4 +1,4 @@
-"""PostgreSQL (pgvector) dense retrieval and BGE reranking."""
+"""PostgreSQL (pgvector) dense retrieval and HF Inference API reranking."""
 
 from __future__ import annotations
 
@@ -32,29 +32,14 @@ class PgVectorStore:
         embedder: SentenceTransformerEmbedder | None = None,
         engine: Engine | None = None,
     ) -> None:
-        """Create PostgreSQL engine and lazy-loadable CrossEncoder reranker."""
+        """Create PostgreSQL engine. Reranking uses HF Inference API (no local models)."""
         if not config.postgres_url:
             raise ValueError("Set POSTGRES_URL in .env to your PostgreSQL database.")
 
         self.config = config
         self.engine = engine or get_db_engine()
         self.embedder = embedder or SentenceTransformerEmbedder(config)
-        self._reranker = None
-        print(f"[vectorstore] PgVectorStore initialized. Reranker ({config.reranker_model}) will be lazy-loaded.")
-
-    @property
-    def reranker(self):
-        """Lazy load the reranker to prevent deployment healthcheck timeouts or OOMs during startup."""
-        if self._reranker is None:
-            try:
-                from sentence_transformers import CrossEncoder
-            except ImportError as exc:
-                raise ImportError("Install sentence-transformers for the CrossEncoder reranker.") from exc
-            
-            print(f"[vectorstore] Lazy-loading Cross-Encoder reranker: {self.config.reranker_model}...")
-            self._reranker = CrossEncoder(self.config.reranker_model)
-            print(f"[vectorstore] Cross-Encoder reranker loaded successfully.")
-        return self._reranker
+        print(f"[vectorstore] PgVectorStore initialized. Reranker ({config.reranker_model}) via HF Inference API.")
         
     def ensure_collection(self, vector_size: int) -> None:
         """Create the pgvector extension and the chunks table."""
@@ -124,7 +109,7 @@ class PgVectorStore:
     ) -> list[dict[str, Any]]:
         """Retrieve and rerank the most relevant chunks for a query.
         
-        Uses pgvector for cosine similarity, followed by BGE cross-encoder reranking.
+        Uses pgvector for cosine similarity, followed by HF Inference API reranking.
         """
         print(f"[vectorstore] Searching pgvector for: {query[:80]}")
         
@@ -187,7 +172,7 @@ class PgVectorStore:
         if not rows:
             return []
             
-        # Rerank with CrossEncoder or HF API
+        # Rerank via HF Inference API (cloud-only, no local models)
         import math
         def sigmoid(logit: float) -> float:
             try:
@@ -201,49 +186,40 @@ class PgVectorStore:
 
         rerank_pairs = [[query, row["text"]] for row in rows]
         rerank_scores = []
-        
-        hf_token = self.config.hf_token
-        # Try HF Inference API first if token is available
-        if hf_token:
-            print(f"[vectorstore] Calling HF Inference API for reranking with {self.config.reranker_model}...")
-            try:
-                from huggingface_hub import InferenceClient
-                import json
-                
-                client_kwargs = {"model": self.config.reranker_model, "token": hf_token}
-                if hasattr(self.config, "reranker_inference_provider") and self.config.reranker_inference_provider:
-                    client_kwargs["provider"] = self.config.reranker_inference_provider
-                
-                client = InferenceClient(**client_kwargs)
-                payload = {
-                    "inputs": [{"text": pair[0], "text_pair": pair[1]} for pair in rerank_pairs]
-                }
-                
-                response_bytes = client.post(json=payload)
-                api_result = json.loads(response_bytes.decode("utf-8"))
-                
-                # HF API can return list of floats or list of dicts
-                if isinstance(api_result, list):
-                    for item in api_result:
-                        if isinstance(item, float) or isinstance(item, int):
-                            rerank_scores.append(float(item))
-                        elif isinstance(item, dict) and "score" in item:
-                            rerank_scores.append(float(item["score"]))
-                        elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict) and "score" in item[0]:
-                            rerank_scores.append(float(item[0]["score"]))
-                        else:
-                            rerank_scores.append(0.0)
-                else:
-                    print(f"[vectorstore] Unexpected HF API response format: {api_result}")
-                    rerank_scores = [0.0] * len(rows)
-            except Exception as e:
-                print(f"[vectorstore] HF InferenceClient request failed: {e}")
+
+        print(f"[vectorstore] Calling HF Inference API for reranking with {self.config.reranker_model}...")
+        try:
+            from huggingface_hub import InferenceClient
+            
+            client_kwargs = {"model": self.config.reranker_model, "token": self.config.hf_token}
+            if hasattr(self.config, "reranker_inference_provider") and self.config.reranker_inference_provider:
+                client_kwargs["provider"] = self.config.reranker_inference_provider
+            
+            client = InferenceClient(**client_kwargs)
+            payload = {
+                "inputs": [{"text": pair[0], "text_pair": pair[1]} for pair in rerank_pairs]
+            }
+            
+            response_bytes = client.post(json=payload)
+            api_result = json.loads(response_bytes.decode("utf-8"))
+            
+            # HF API can return list of floats or list of dicts
+            if isinstance(api_result, list):
+                for item in api_result:
+                    if isinstance(item, float) or isinstance(item, int):
+                        rerank_scores.append(float(item))
+                    elif isinstance(item, dict) and "score" in item:
+                        rerank_scores.append(float(item["score"]))
+                    elif isinstance(item, list) and len(item) > 0 and isinstance(item[0], dict) and "score" in item[0]:
+                        rerank_scores.append(float(item[0]["score"]))
+                    else:
+                        rerank_scores.append(0.0)
+            else:
+                print(f"[vectorstore] Unexpected HF API response format: {api_result}")
                 rerank_scores = [0.0] * len(rows)
-        else:
-            # Fallback to local CrossEncoder if no HF_TOKEN
-            rerank_scores = self.reranker.predict(rerank_pairs)
-            if not isinstance(rerank_scores, list):
-                rerank_scores = rerank_scores.tolist()
+        except Exception as e:
+            print(f"[vectorstore] HF InferenceClient request failed: {e}")
+            rerank_scores = [0.0] * len(rows)
 
         
         print(f"\n==================== [CROSS-ENCODER RERANKING DEBUG] ====================")

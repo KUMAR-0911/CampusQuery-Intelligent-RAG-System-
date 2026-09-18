@@ -39,8 +39,8 @@ def get_hybrid_chunker(config: RetrievalConfig = DEFAULT_CONFIG):
 
 @lru_cache(maxsize=1)
 def get_vector_store(config: RetrievalConfig = DEFAULT_CONFIG) -> PgVectorStore:
-    """Return singleton PgVectorStore pre-loaded with CrossEncoder reranker and embedder."""
-    print(f"[startup] Pre-loading PgVectorStore & CrossEncoder reranker ({config.reranker_model})...")
+    """Return singleton PgVectorStore with HF Inference API embedder and reranker."""
+    print(f"[startup] Initializing PgVectorStore (reranker: {config.reranker_model} via HF API)...")
     return PgVectorStore(config)
 
 
