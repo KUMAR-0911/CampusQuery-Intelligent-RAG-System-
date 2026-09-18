@@ -48,24 +48,59 @@ export default function OTP() {
     }
   };
 
+  const triggerVerify = async (codeToVerify) => {
+    const code = codeToVerify || otp.join('');
+    if (code.length !== 6) {
+      setError('Please enter the full 6-digit code.');
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      await api.post('/verify-otp', { email, otp: code });
+      toast.success('Email verified successfully! You can now log in.');
+      navigate('/login', { state: { email } });
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleChange = (index, value) => {
     if (!/^\d*$/.test(value)) return;
+    setError('');
     const newOtp = [...otp];
     newOtp[index] = value.slice(-1);
     setOtp(newOtp);
+
+    // Auto-focus next input
     if (value && index < 5) {
       inputRefs.current[index + 1]?.focus();
+    }
+
+    // Auto-submit as soon as the 6th digit is entered
+    const completeCode = newOtp.join('');
+    if (completeCode.length === 6 && !newOtp.includes('')) {
+      triggerVerify(completeCode);
     }
   };
 
   const handleKeyDown = (index, e) => {
-    if (e.key === 'Backspace' && !otp[index] && index > 0) {
+    if (e.key === 'Backspace') {
+      if (!otp[index] && index > 0) {
+        inputRefs.current[index - 1]?.focus();
+      }
+    } else if (e.key === 'ArrowLeft' && index > 0) {
       inputRefs.current[index - 1]?.focus();
+    } else if (e.key === 'ArrowRight' && index < 5) {
+      inputRefs.current[index + 1]?.focus();
     }
   };
 
   const handlePaste = (e) => {
     e.preventDefault();
+    setError('');
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
     if (pasted.length > 0) {
       const newOtp = [...otp];
@@ -75,28 +110,18 @@ export default function OTP() {
       setOtp(newOtp);
       const lastFilledIndex = Math.min(pasted.length, 5);
       inputRefs.current[lastFilledIndex]?.focus();
+
+      // If full 6 digits were pasted, immediately verify
+      if (pasted.length === 6) {
+        triggerVerify(pasted);
+      }
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     if (loading) return;
-    const otpValue = otp.join('');
-    if (otpValue.length !== 6) {
-      setError('Please enter the full 6-digit code.');
-      return;
-    }
-    setError('');
-    setLoading(true);
-    try {
-      await api.post('/verify-otp', { email, otp: otpValue });
-      toast.success('Email verified successfully!');
-      navigate('/login');
-    } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      setLoading(false);
-    }
+    triggerVerify();
   };
 
   const maskedEmail = email.replace(/(.{2})(.*)(@.*)/, '$1***$3');

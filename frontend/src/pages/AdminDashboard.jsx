@@ -77,27 +77,36 @@ export default function AdminDashboard() {
   };
 
   const updateStatus = async (userId, newStatus) => {
+    const previousUsers = [...users];
+    // Optimistic update in UI
+    setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, status: newStatus } : u)));
     try {
       await api.put(`/users/${userId}/status?status=${newStatus}`);
       toast.success(`User status updated to ${newStatus}`);
-      fetchUsers();
     } catch (err) {
+      setUsers(previousUsers);
       toast.error(getErrorMessage(err));
     }
   };
 
   const confirmDeleteUser = async () => {
     if (!userToDelete) return;
-    setIsDeleting(true);
+    const target = userToDelete;
+    const previousUsers = [...users];
+
+    // Optimistic instant UI removal: 0ms perceived latency
+    setUsers((prev) => prev.filter((u) => u.id !== target.id));
+    setUserToDelete(null);
+    setIsDeleting(false);
+
     try {
-      const res = await api.delete(`/users/${userToDelete.id}`);
-      toast.success(res.data?.message || `User ${userToDelete.email} has been permanently deleted.`);
-      setUserToDelete(null);
-      await Promise.all([fetchUsers(), fetchMetrics(timeWindow)]);
+      const res = await api.delete(`/users/${target.id}`);
+      toast.success(res.data?.message || `User ${target.email} has been permanently deleted.`);
+      fetchMetrics(timeWindow);
     } catch (err) {
+      // Revert state if backend delete fails
+      setUsers(previousUsers);
       toast.error(getErrorMessage(err));
-    } finally {
-      setIsDeleting(false);
     }
   };
 

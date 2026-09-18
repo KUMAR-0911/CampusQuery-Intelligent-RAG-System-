@@ -18,9 +18,11 @@ def get_db_engine() -> Engine:
     engine = create_engine(
         url,
         pool_pre_ping=True,
-        pool_recycle=300,
-        pool_size=5,
-        max_overflow=5,
+        pool_recycle=1800,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=30,
     )
     return engine
+
 
