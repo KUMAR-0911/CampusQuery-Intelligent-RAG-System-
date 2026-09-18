@@ -19,7 +19,13 @@ class RetrievalConfig:
     embedding_model: str = os.getenv(
         "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"
     )
+    # ── Hugging Face Tokens (Granular per-component with global HF_TOKEN fallback) ──
     hf_token: str | None = os.getenv("HF_TOKEN")
+    hf_embedding_token: str | None = os.getenv("HF_EMBEDDING_TOKEN", os.getenv("HF_TOKEN"))
+    hf_reranker_token: str | None = os.getenv("HF_RERANKER_TOKEN", os.getenv("HF_TOKEN"))
+    hf_guardrail_token: str | None = os.getenv("HF_GUARDRAIL_TOKEN", os.getenv("HF_TOKEN"))
+    hf_memory_token: str | None = os.getenv("HF_MEMORY_TOKEN", os.getenv("HF_TOKEN"))
+    hf_query_rewriter_token: str | None = os.getenv("HF_QUERY_REWRITER_TOKEN", os.getenv("HF_TOKEN"))
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "384"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "48"))
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))

@@ -16,6 +16,18 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
+      - key: HF_EMBEDDING_TOKEN
+        sync: false
+      - key: HF_RERANKER_TOKEN
+        sync: false
+      - key: HF_GUARDRAIL_TOKEN
+        sync: false
+      - key: HF_MEMORY_TOKEN
+        sync: false
+      - key: HF_QUERY_REWRITER_TOKEN
+        sync: false
+      - key: LOGFIRE_TOKEN
+        sync: false
       - key: JWT_SECRET_KEY
         sync: false
       - key: AFFINDA_API_KEY

@@ -39,7 +39,37 @@ class PgVectorStore:
         self.config = config
         self.engine = engine or get_db_engine()
         self.embedder = embedder or SentenceTransformerEmbedder(config)
+        self.reranker_client = None
+        self._init_reranker_client()
         print(f"[vectorstore] PgVectorStore initialized. Reranker ({config.reranker_model}) via HF Inference API.")
+
+    def _init_reranker_client(self):
+        if self.reranker_client is not None:
+            return self.reranker_client
+        token = getattr(self.config, "hf_reranker_token", None) or self.config.hf_token
+        if token:
+            try:
+                from huggingface_hub import InferenceClient
+                client_kwargs = {"model": self.config.reranker_model, "token": token}
+                if hasattr(self.config, "reranker_inference_provider") and self.config.reranker_inference_provider:
+                    client_kwargs["provider"] = self.config.reranker_inference_provider
+                self.reranker_client = InferenceClient(**client_kwargs)
+                print(f"[vectorstore] Remote Reranker client initialized ({self.config.reranker_model}).")
+            except Exception as exc:
+                print(f"[vectorstore] Notice initializing reranker client: {exc}")
+        return self.reranker_client
+
+    def preload(self) -> None:
+        """Eagerly initialize and prewarm embedder, reranker, and vector database schema."""
+        if hasattr(self.embedder, "preload"):
+            self.embedder.preload()
+        self._init_reranker_client()
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("[vectorstore] PostgreSQL pgvector connection preloaded successfully.")
+        except Exception as exc:
+            print(f"[vectorstore] Database ping notice during preload: {exc}")
         
     def ensure_collection(self, vector_size: int) -> None:
         """Create the pgvector extension and the chunks table."""
@@ -189,13 +219,9 @@ class PgVectorStore:
 
         print(f"[vectorstore] Calling HF Inference API for reranking with {self.config.reranker_model}...")
         try:
-            from huggingface_hub import InferenceClient
-            
-            client_kwargs = {"model": self.config.reranker_model, "token": self.config.hf_token}
-            if hasattr(self.config, "reranker_inference_provider") and self.config.reranker_inference_provider:
-                client_kwargs["provider"] = self.config.reranker_inference_provider
-            
-            client = InferenceClient(**client_kwargs)
+            client = self.reranker_client or self._init_reranker_client()
+            if not client:
+                raise ValueError("Reranker client could not be initialized. Check HF_RERANKER_TOKEN or HF_TOKEN.")
             payload = {
                 "inputs": [{"text": pair[0], "text_pair": pair[1]} for pair in rerank_pairs]
             }

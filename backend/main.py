@@ -112,16 +112,34 @@ def get_resources() -> tuple[PgVectorStore, RetrievalAgent, PostgresMemory, Memo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize resources and API clients. All ML inference runs via cloud APIs."""
-    print("[startup] Initializing backend resources (all ML inference via HF cloud APIs)...")
+    """Initialize resources and eagerly load all cloud components on application startup."""
+    print("[startup] Initializing backend resources and preloading all cloud components...")
     try:
         store, agent, memory, summarizer, user_manager, guardrails = get_resources()
+        
+        # 1. Preload PgVectorStore, remote Embedder (HF Inference) & Reranker (HF Inference)
+        if hasattr(store, "preload"):
+            store.preload()
+        elif hasattr(store.embedder, "preload"):
+            store.embedder.preload()
+
+        # 2. Preload Remote Safety Guardrails (HF Inference)
+        guardrails.preload()
+
+        # 3. Preload Background Memory Summarizer (HF Inference / Groq)
+        summarizer.preload()
+
+        # 4. Preload Retrieval Agent & Query Rewriter (HF Inference / Groq)
+        if hasattr(agent, "preload"):
+            agent.preload()
+
+        # 5. Preload Document Extractor & Chunker
         get_affinda_extractor()
         get_hybrid_chunker()
-        guardrails.preload()
-        print("[startup] All models and resources initialized successfully! Ready for requests.")
+
+        print("[startup] All cloud components (Embedding, Reranker, Guardrails, Memory, Extractor) preloaded successfully! Ready for requests.")
     except Exception as exc:
-        print(f"[startup] Non-critical model init notice: {exc}")
+        print(f"[startup] Non-critical cloud component init notice: {exc}")
     yield
 
 

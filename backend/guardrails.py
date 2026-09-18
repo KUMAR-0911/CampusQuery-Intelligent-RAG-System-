@@ -33,7 +33,7 @@ class CampusGuardrails:
     ) -> None:
         cfg = config or DEFAULT_CONFIG
         self.model = model or cfg.hf_guardrail_model
-        self.token = token or cfg.hf_token
+        self.token = token or getattr(cfg, "hf_guardrail_token", None) or cfg.hf_token
         self.provider = provider or getattr(cfg, "hf_inference_provider", "featherless-ai")
         self.prompt = prompt or cfg.resume_analyser_guardrail_prompt
         self.guard_block_threshold = block_threshold if block_threshold is not None else cfg.guard_block_threshold
@@ -64,7 +64,9 @@ class CampusGuardrails:
     def preload(self) -> None:
         """Eagerly initialize the remote guardrail model client on application startup."""
         if self.token:
-            self._get_client()
+            client = self._get_client()
+            if client:
+                print(f"[guardrail] Remote Guardrail client preloaded successfully ({self.model}).")
 
     def _remote_check(self, text: str, direction: str) -> GuardrailResult:
         if not self.token:

@@ -14,15 +14,24 @@ class SentenceTransformerEmbedder:
         """Initialize the embedder using HF Inference API."""
         self.config = config
         
-        if not config.hf_token:
-            raise ValueError("HF_TOKEN is required — all embeddings run via HF Inference API.")
+        token = getattr(config, "hf_embedding_token", None) or config.hf_token
+        if not token:
+            raise ValueError("HF_EMBEDDING_TOKEN (or HF_TOKEN) is required — all embeddings run via HF Inference API.")
         
         from huggingface_hub import InferenceClient
         
         print(f"[embedding] Using remote Hugging Face Inference API for model: {config.embedding_model}")
-        client_kwargs = {"model": config.embedding_model, "token": config.hf_token}
+        client_kwargs = {"model": config.embedding_model, "token": token}
         client_kwargs["provider"] = "hf-inference"
         self.client = InferenceClient(**client_kwargs)
+
+    def preload(self) -> None:
+        """Warm up the remote embedding client on startup."""
+        try:
+            _ = self.embed_texts(["ping"])
+            print(f"[embedding] Remote embedding client preloaded & warmed up ({self.config.embedding_model}).")
+        except Exception as exc:
+            print(f"[embedding] Remote embedding preload notice: {exc}")
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """Create normalized vector embeddings for a sequence of texts."""

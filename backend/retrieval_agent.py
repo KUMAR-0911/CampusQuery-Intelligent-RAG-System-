@@ -53,10 +53,11 @@ class RetrievalAgent:
         self.query_rewriter_model = getattr(config, "query_rewriter_model", "Qwen/Qwen3-0.6B")
         self.query_rewriter_provider = getattr(config, "query_rewriter_provider", "featherless-ai")
         self._hf_rewriter_client = None
-        if config.hf_token:
+        rewriter_token = getattr(config, "hf_query_rewriter_token", None) or config.hf_token
+        if rewriter_token:
             try:
                 from huggingface_hub import InferenceClient
-                client_kwargs = {"token": config.hf_token, "model": self.query_rewriter_model}
+                client_kwargs = {"token": rewriter_token, "model": self.query_rewriter_model}
                 provider_choice = self.query_rewriter_provider or getattr(config, "hf_inference_provider", None)
                 if provider_choice:
                     client_kwargs["provider"] = provider_choice
@@ -66,6 +67,16 @@ class RetrievalAgent:
                 print(f"[pipeline] Notice: Could not initialize HF rewriter client: {e}")
 
         print(f"[pipeline] Direct Retrieval Pipeline initialized with reasoning model: {config.groq_model}")
+
+    def preload(self) -> None:
+        """Eagerly prewarm reasoning LLM client and query rewriter on application startup."""
+        try:
+            if hasattr(self, "_hf_rewriter_client") and self._hf_rewriter_client:
+                print(f"[pipeline] Query rewriter client preloaded: {self.query_rewriter_model}")
+            if hasattr(self, "llm") and self.llm:
+                print(f"[pipeline] Reasoning model client preloaded: {self.config.groq_model}")
+        except Exception as exc:
+            print(f"[pipeline] Preload notice: {exc}")
 
     def rewrite_and_classify(
         self,

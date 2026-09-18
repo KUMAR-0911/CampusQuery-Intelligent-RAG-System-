@@ -35,6 +35,7 @@ class MemorySummarizer:
     def preload(self) -> None:
         """Eagerly load and initialize the background summarizer model client on application startup."""
         self._get_llm()
+        print(f"[memory_summarizer] Background memory summarizer preloaded successfully ({self.provider}: {self.model}).")
 
 
     def _get_llm(self) -> Any:
@@ -43,9 +44,9 @@ class MemorySummarizer:
             return self._llm
 
         if self.provider == "huggingface":
-            token = self.config.hf_token
+            token = getattr(self.config, "hf_memory_token", None) or self.config.hf_token
             if not token:
-                raise ValueError("Set HF_TOKEN for Hugging Face background summarizer.")
+                raise ValueError("Set HF_MEMORY_TOKEN (or HF_TOKEN) for Hugging Face background summarizer.")
             from huggingface_hub import InferenceClient
 
             provider_choice = getattr(self.config, "summarizer_inference_provider", "nscale")
