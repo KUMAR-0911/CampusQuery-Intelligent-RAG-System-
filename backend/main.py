@@ -53,7 +53,6 @@ from RETRIVAL.pipeline import answer_question, ingest_to_pgvector, get_affinda_e
 from RETRIVAL.pgvectorstore import PgVectorStore
 from database import get_db_engine
 
-from profile_requests import profile_endpoint
 import auth
 from models import UserManager, UserRole, UserStatus
 
@@ -466,7 +465,6 @@ def dispatch_otp_email(to_email: str, otp: str) -> None:
 
 
 @app.post("/register")
-@profile_endpoint
 def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     name = (data.name or "").strip() or email.split("@")[0]
@@ -502,7 +500,6 @@ def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserMana
 
 
 @app.post("/resend-otp")
-@profile_endpoint
 def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     user = um.get_user_by_email(email)
@@ -520,7 +517,6 @@ def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: Us
 
 
 @app.post("/verify-otp")
-@profile_endpoint
 def verify_otp(data: OTPVerify, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     input_otp = str(data.otp).strip()
@@ -593,7 +589,6 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
 
 
 @app.post("/forgot-password")
-@profile_endpoint
 def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     user = um.get_user_by_email(email)
@@ -608,7 +603,6 @@ def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um:
 
 
 @app.post("/reset-password")
-@profile_endpoint
 def reset_password(data: ResetPassword, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     input_otp = str(data.otp).strip()
