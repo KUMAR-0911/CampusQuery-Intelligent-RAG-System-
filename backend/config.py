@@ -154,15 +154,22 @@ class RetrievalConfig:
     answer_max_context_chars: int = int(
         os.getenv("ANSWER_MAX_CONTEXT_CHARS", "24000")
     )
-    # ── SMTP Email Configuration ──
+    # ── Email Service Configuration (HTTP API + SMTP) ──
+    # HTTP-based providers (Port 443 HTTPS - Works on Render Free Tier and Cloud Platforms)
+    resend_api_key: str | None = os.getenv("RESEND_API_KEY")
+    brevo_api_key: str | None = os.getenv("BREVO_API_KEY")
+    
+    # SMTP-based providers (Ports 465 / 587 - Works locally & on paid compute tiers)
     smtp_server: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     smtp_port: int = int(os.getenv("SMTP_PORT", "465"))
     smtp_username: str | None = os.getenv("SMTP_USERNAME")
     smtp_password: str | None = os.getenv("SMTP_PASSWORD")
     smtp_from_email: str | None = os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USERNAME"))
-    # Connection pooling for SMTP (optional, not all libraries support it)
     smtp_pool_size: int = int(os.getenv("SMTP_POOL_SIZE", "5"))
-    smtp_timeout: float = float(os.getenv("SMTP_TIMEOUT", "12.0"))
+    smtp_timeout: float = float(os.getenv("SMTP_TIMEOUT", "4.0"))
+    
+    # Debug / Development OTP helper
+    debug_otp: bool = os.getenv("DEBUG_OTP", "false").lower() == "true"
     
     # ── Authentication (JWT) & Security ──
 

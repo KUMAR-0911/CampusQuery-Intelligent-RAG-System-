@@ -50,14 +50,14 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      await api.post('/register', {
+      const res = await api.post('/register', {
         name: name.trim() || undefined,
         nationality: nationality.trim() || undefined,
         email,
         password
       });
       toast.success('Account created! Please verify your email.');
-      navigate('/verify-otp', { state: { email } });
+      navigate('/verify-otp', { state: { email, otp_debug: res.data?.otp_debug } });
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {

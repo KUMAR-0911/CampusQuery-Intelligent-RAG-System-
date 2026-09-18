@@ -349,15 +349,12 @@ async def get_current_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 import smtplib
+import requests
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 
 # Dedicated thread pool for non-blocking OTP email dispatching
-email_executor = ThreadPoolExecutor(max_workers=DEFAULT_CONFIG.smtp_pool_size, thread_name_prefix="otp-mailer")
-
-# Persistent SMTP connection for reuse across rapid OTP sends
-_smtp_connection_lock = __import__('threading').Lock()
-_smtp_persistent: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+email_executor = ThreadPoolExecutor(max_workers=max(5, DEFAULT_CONFIG.smtp_pool_size), thread_name_prefix="otp-mailer")
 
 
 def generate_otp() -> str:
@@ -369,13 +366,7 @@ class ResendOTPRequest(BaseModel):
 
 
 def _build_otp_message(to_email: str, otp: str, from_header: str, from_addr: str, sender_domain: str) -> MIMEText:
-    """Build a plain-text OTP email optimized for inbox delivery (anti-spam).
-
-    Why plain-text only:
-    - HTML emails from free Gmail accounts are heavily penalized by spam filters
-    - MIMEMultipart 'alternative' with HTML triggers Bayesian spam classifiers
-    - Plain text emails from Gmail have near-perfect inbox placement rates
-    """
+    """Build a plain-text OTP email optimized for inbox delivery (anti-spam)."""
     body = (
         f"Hi,\n\n"
         f"Your verification code for CampusQuery is:\n\n"
@@ -395,16 +386,97 @@ def _build_otp_message(to_email: str, otp: str, from_header: str, from_addr: str
     return msg
 
 
-def send_otp_email(to_email: str, otp: str) -> bool:
-    """Send OTP email via SMTP with port fallback and connection reuse.
+def _send_via_resend(to_email: str, otp: str) -> bool:
+    """Send OTP email via Resend HTTPS REST API (Port 443 - works on Render Free Tier)."""
+    api_key = (DEFAULT_CONFIG.resend_api_key or "").strip()
+    if not api_key:
+        return False
+    try:
+        t0 = time.perf_counter()
+        from_email = (DEFAULT_CONFIG.smtp_from_email or "onboarding@resend.dev").strip()
+        if not ("<" in from_email or "@" in from_email):
+            from_email = "CampusQuery <onboarding@resend.dev>"
+        elif "<" not in from_email:
+            from_email = f"CampusQuery <{from_email}>"
 
-    Tries the configured port first, then falls back to the alternative.
-    Returns True on success, False on failure (never raises).
-    """
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": from_email,
+                "to": [to_email],
+                "subject": "Verify your CampusQuery account",
+                "text": (
+                    f"Hi,\n\n"
+                    f"Your verification code for CampusQuery is:\n\n"
+                    f"    {otp}\n\n"
+                    f"This code expires in 10 minutes.\n\n"
+                    f"If you did not request this code, you can safely ignore this email.\n\n"
+                    f"- CampusQuery Team"
+                ),
+            },
+            timeout=5.0,
+        )
+        elapsed = (time.perf_counter() - t0) * 1000
+        if resp.status_code in (200, 201):
+            print(f"[email:RESEND:OK] OTP delivered to {to_email} via Resend HTTPS API in {elapsed:.0f}ms")
+            return True
+        else:
+            print(f"[email:RESEND:WARN] Resend API returned status {resp.status_code}: {resp.text}")
+            return False
+    except Exception as exc:
+        print(f"[email:RESEND:ERROR] Resend API exception: {exc}")
+        return False
+
+
+def _send_via_brevo(to_email: str, otp: str) -> bool:
+    """Send OTP email via Brevo HTTPS REST API (Port 443 - works on Render Free Tier)."""
+    api_key = (DEFAULT_CONFIG.brevo_api_key or "").strip()
+    if not api_key:
+        return False
+    try:
+        t0 = time.perf_counter()
+        from_email = (DEFAULT_CONFIG.smtp_from_email or "noreply@campusquery.com").strip()
+        resp = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "sender": {"name": "CampusQuery", "email": from_email},
+                "to": [{"email": to_email}],
+                "subject": "Verify your CampusQuery account",
+                "textContent": (
+                    f"Hi,\n\n"
+                    f"Your verification code for CampusQuery is:\n\n"
+                    f"    {otp}\n\n"
+                    f"This code expires in 10 minutes.\n\n"
+                    f"- CampusQuery Team"
+                ),
+            },
+            timeout=5.0,
+        )
+        elapsed = (time.perf_counter() - t0) * 1000
+        if resp.status_code in (200, 201):
+            print(f"[email:BREVO:OK] OTP delivered to {to_email} via Brevo HTTPS API in {elapsed:.0f}ms")
+            return True
+        else:
+            print(f"[email:BREVO:WARN] Brevo API returned status {resp.status_code}: {resp.text}")
+            return False
+    except Exception as exc:
+        print(f"[email:BREVO:ERROR] Brevo API exception: {exc}")
+        return False
+
+
+def _send_via_smtp(to_email: str, otp: str) -> bool:
+    """Send OTP email via SMTP with direct SSL (port 465) / STARTTLS (port 587) fallback."""
     raw_username = DEFAULT_CONFIG.smtp_username
     raw_password = DEFAULT_CONFIG.smtp_password
     if not (raw_username and raw_password):
-        print(f"[email:WARN] OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env)")
         return False
 
     username = raw_username.strip()
@@ -414,11 +486,10 @@ def send_otp_email(to_email: str, otp: str) -> bool:
     server_host = (DEFAULT_CONFIG.smtp_server or "smtp.gmail.com").strip()
     configured_port = int(DEFAULT_CONFIG.smtp_port or 465)
     sender_domain = from_addr.split("@")[-1].rstrip(">").strip() if "@" in from_addr else "gmail.com"
-    timeout = DEFAULT_CONFIG.smtp_timeout
+    timeout = min(DEFAULT_CONFIG.smtp_timeout, 4.0)
 
     msg = _build_otp_message(to_email, otp, from_header, from_addr, sender_domain)
 
-    # Determine attempt order: configured port first, then fallback
     alt_port = 465 if configured_port == 587 else 587
     ports_to_try = [configured_port, alt_port]
 
@@ -438,13 +509,38 @@ def send_otp_email(to_email: str, otp: str) -> bool:
                     server.login(username, password)
                     server.send_message(msg)
             elapsed = (time.perf_counter() - t0) * 1000
-            print(f"[email:OK] OTP delivered to {to_email} via port {port} in {elapsed:.0f}ms")
+            print(f"[email:SMTP:OK] OTP delivered to {to_email} via port {port} in {elapsed:.0f}ms")
             return True
         except Exception as exc:
             last_error = exc
-            print(f"[email:RETRY] Port {port} failed for {to_email}: {exc}")
+            print(f"[email:SMTP:RETRY] Port {port} failed for {to_email}: {exc}")
 
-    print(f"[email:FAIL] All ports failed for {to_email}: {last_error}. OTP was: {otp}")
+    print(f"[email:SMTP:FAIL] All SMTP ports failed for {to_email}: {last_error}")
+    return False
+
+
+def send_otp_email(to_email: str, otp: str) -> bool:
+    """Send OTP email using HTTP API (Resend / Brevo) first, falling back to SMTP."""
+    # 1. Try Resend HTTP API (Port 443 - works everywhere, immune to Render SMTP block)
+    if DEFAULT_CONFIG.resend_api_key:
+        if _send_via_resend(to_email, otp):
+            return True
+
+    # 2. Try Brevo HTTP API (Port 443)
+    if DEFAULT_CONFIG.brevo_api_key:
+        if _send_via_brevo(to_email, otp):
+            return True
+
+    # 3. Direct SMTP (Ports 465 / 587 - works locally and on paid VPS)
+    if DEFAULT_CONFIG.smtp_username and DEFAULT_CONFIG.smtp_password:
+        if _send_via_smtp(to_email, otp):
+            return True
+
+    # 4. Fallback logging
+    print(f"[email:FAIL] Could not send OTP to {to_email}. OTP is: {otp}")
+    if os.getenv("RENDER"):
+        print("[email:NOTICE] Running on Render Free Tier: SMTP ports 25, 465, and 587 are blocked by Render.")
+        print("[email:NOTICE] Add RESEND_API_KEY to your Render Environment Variables for instant HTTP delivery (resend.com).")
     return False
 
 
@@ -481,22 +577,24 @@ def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserMana
         um.otp_store.set_otp(email, otp)
         um.update_password(email, hashed_password)
         background_tasks.add_task(um.update_otp, email, otp)
-        # Send OTP synchronously on registration to guarantee delivery before responding
-        email_sent = send_otp_email(email, otp)
-        if not email_sent:
-            print(f"[register:WARN] OTP email failed for {email}, OTP={otp} stored in memory")
-        return {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
+        # Non-blocking async dispatch (< 150ms response!)
+        dispatch_otp_email(email, otp)
+        resp = {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
+        if DEFAULT_CONFIG.debug_otp:
+            resp["otp_debug"] = otp
+        return resp
     
     hashed_password = auth.get_password_hash(data.password)
     otp = generate_otp()
     um.otp_store.set_otp(email, otp)
     user = um.create_user(email=email, hashed_password=hashed_password, name=name, nationality=nationality, otp_code=otp)
-    # Send OTP synchronously on first registration to guarantee delivery
-    email_sent = send_otp_email(email, otp)
-    if not email_sent:
-        print(f"[register:WARN] OTP email failed for new user {email}, OTP={otp} stored in memory+DB")
+    # Non-blocking async dispatch (< 150ms response!)
+    dispatch_otp_email(email, otp)
     
-    return {"message": "User registered. Please check email for OTP.", "email": user["email"]}
+    resp = {"message": "User registered. Please check email for OTP.", "email": user["email"]}
+    if DEFAULT_CONFIG.debug_otp:
+        resp["otp_debug"] = otp
+    return resp
 
 
 @app.post("/resend-otp")
@@ -513,7 +611,10 @@ def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: Us
     um.otp_store.set_otp(email, otp)
     background_tasks.add_task(um.update_otp, email, otp)
     dispatch_otp_email(email, otp)
-    return {"message": "A new verification code has been dispatched to your email."}
+    resp = {"message": "A new verification code has been dispatched to your email."}
+    if DEFAULT_CONFIG.debug_otp:
+        resp["otp_debug"] = otp
+    return resp
 
 
 @app.post("/verify-otp")
@@ -599,7 +700,10 @@ def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um:
     um.otp_store.set_otp(email, otp)
     background_tasks.add_task(um.update_otp, email, otp)
     dispatch_otp_email(email, otp)
-    return {"message": "If the email is registered, an OTP was sent."}
+    resp = {"message": "If the email is registered, an OTP was sent."}
+    if DEFAULT_CONFIG.debug_otp:
+        resp["otp_debug"] = otp
+    return resp
 
 
 @app.post("/reset-password")
