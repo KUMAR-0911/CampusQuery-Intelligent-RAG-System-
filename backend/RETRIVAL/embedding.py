@@ -38,11 +38,35 @@ class SentenceTransformerEmbedder:
         if not texts:
             return []
             
-        print(f"[embedding] Generating embeddings for {len(texts)} text(s).")
-        vectors = self.client.feature_extraction(list(texts)).tolist()
-        if len(texts) == 1 and isinstance(vectors[0], float):
-             vectors = [vectors]
-        return vectors
+        text_list = list(texts)
+        print(f"[embedding] Generating embeddings for {len(text_list)} text(s).")
+        try:
+            vectors = self.client.feature_extraction(text_list)
+            if hasattr(vectors, "tolist"):
+                vectors = vectors.tolist()
+            if len(text_list) == 1 and isinstance(vectors[0], (float, int)):
+                vectors = [vectors]
+            return vectors
+        except Exception as exc:
+            # Fallback that bypasses numpy entirely using InferenceClient's direct response helper
+            print(f"[embedding] Direct provider extraction fallback (reason: {exc})")
+            try:
+                from huggingface_hub.inference._providers import get_provider_helper
+                helper = get_provider_helper(self.client.provider, task="feature-extraction", model=self.client.model)
+                params = helper.prepare_request(
+                    inputs=text_list,
+                    parameters={},
+                    headers=self.client.headers,
+                    model=self.client.model,
+                    api_key=self.client.token,
+                )
+                resp = self.client._inner_post(params)
+                vectors = helper.get_response(resp)
+                if len(text_list) == 1 and isinstance(vectors[0], (float, int)):
+                    vectors = [vectors]
+                return vectors
+            except Exception as inner_exc:
+                raise RuntimeError(f"Embedding feature extraction failed: {inner_exc}") from inner_exc
 
     def embed_documents(self, documents: Sequence[Document]) -> list[list[float]]:
         """Embed chunk text only; ``Document.metadata`` is never embedded."""
