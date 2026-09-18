@@ -221,7 +221,7 @@ async def track_latency_and_metrics(request: Request, call_next):
     return response
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {
         "status": "online",
@@ -697,7 +697,7 @@ async def compact_user_memory_async(
         print(f"[background-memory] !!! Background memory compaction failed for user {user_id}: {exc!r}\n")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> dict[str, str]:
     """Return a lightweight service health response."""
     return {"status": "ok"}
