@@ -18,7 +18,9 @@ const processQueue = (error, token = null) => {
 };
 
 async function executeFetch(endpoint, options = {}) {
-  const url = endpoint.startsWith('http') ? endpoint : `${API_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+  const base = (API_URL || '').replace(/\/+$/, '');
+  const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = endpoint.startsWith('http') ? endpoint : `${base}${cleanPath}`;
 
   const headers = { ...options.headers };
 

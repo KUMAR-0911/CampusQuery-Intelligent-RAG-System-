@@ -147,6 +147,15 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def normalize_request_path(request: Request, call_next):
+    """Normalize double slashes like //login to /login to avoid 404 errors."""
+    path = request.scope.get("path", "")
+    if "//" in path:
+        request.scope["path"] = re.sub(r"/+", "/", path)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def track_latency_and_metrics(request: Request, call_next):
     """Accurately measures request latency and stores metrics in PostgreSQL for P50/P95/P99 analytics."""
     start_time = time.perf_counter()
