@@ -1,50 +1,52 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
 
 /* ═══════════════════════════════════════════════
    DESIGN TOKENS
    ═══════════════════════════════════════════════ */
 :root {
-  /* Background - Clean Executive White Theme */
+  /* Background - Crisp Executive Professional Theme */
   --bg-primary: #ffffff;
   --bg-secondary: #f8fafc;
   --bg-elevated: #ffffff;
   --bg-surface: #f1f5f9;
   --bg-surface-hover: #e2e8f0;
 
-  /* Accent gradient - Executive Royal Blue */
-  --accent-1: #2563eb;
-  --accent-2: #1d4ed8;
-  --accent-3: #1e40af;
-  --gradient-primary: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  --gradient-subtle: linear-gradient(135deg, rgba(37,99,235,0.08) 0%, rgba(29,78,216,0.04) 100%);
-  --gradient-glow: linear-gradient(135deg, rgba(37,99,235,0.15) 0%, rgba(29,78,216,0.08) 100%);
+  /* Accent gradient - Executive Midnight Indigo & Deep Slate */
+  --accent-1: #4338ca;
+  --accent-2: #3730a3;
+  --accent-3: #312e81;
+  --accent-light: #e0e7ff;
+  --gradient-primary: linear-gradient(135deg, #4338ca 0%, #312e81 100%);
+  --gradient-subtle: linear-gradient(135deg, rgba(67, 56, 202, 0.06) 0%, rgba(49, 46, 129, 0.03) 100%);
+  --gradient-glow: linear-gradient(135deg, rgba(67, 56, 202, 0.12) 0%, rgba(49, 46, 129, 0.06) 100%);
 
-  /* Text */
+  /* Text - High Contrast Executive Slate */
   --text-primary: #0f172a;
-  --text-secondary: #475569;
+  --text-secondary: #334155;
   --text-muted: #64748b;
   --text-accent: var(--accent-1);
 
-  /* Borders */
+  /* Borders - Hairline Precision */
   --border-default: #e2e8f0;
   --border-muted: #cbd5e1;
-  --border-accent: rgba(37,99,235,0.3);
+  --border-accent: rgba(67, 56, 202, 0.25);
 
-  /* Status */
-  --color-success: #16a34a;
-  --color-success-bg: rgba(22,163,74,0.1);
+  /* Status - Sophisticated Modern Accents */
+  --color-success: #059669;
+  --color-success-bg: rgba(5, 150, 105, 0.08);
   --color-danger: #dc2626;
-  --color-danger-bg: rgba(220,38,38,0.1);
+  --color-danger-bg: rgba(220, 38, 38, 0.08);
   --color-warning: #d97706;
-  --color-warning-bg: rgba(217,119,6,0.1);
+  --color-warning-bg: rgba(217, 119, 6, 0.08);
   --color-info: #0284c7;
-  --color-info-bg: rgba(2,132,199,0.1);
+  --color-info-bg: rgba(2, 132, 199, 0.08);
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 30px rgba(0,0,0,0.12);
-  --shadow-glow: 0 0 30px rgba(37,99,235,0.1);
+  /* Shadows - Layered Elevation */
+  --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.07), 0 2px 4px -2px rgba(15, 23, 42, 0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
+  --shadow-glow: 0 0 25px rgba(67, 56, 202, 0.12);
 
   /* Radii */
   --radius-sm: 6px;
