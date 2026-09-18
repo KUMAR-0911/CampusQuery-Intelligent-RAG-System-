@@ -164,5 +164,9 @@ class RetrievalConfig:
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24 * 7)))
 
+    # ── Observability (Pydantic Logfire) ──
+    logfire_token: str | None = os.getenv("LOGFIRE_TOKEN")
+    logfire_service_name: str = os.getenv("LOGFIRE_SERVICE_NAME", "campusquery-backend")
+
 
 DEFAULT_CONFIG = RetrievalConfig()

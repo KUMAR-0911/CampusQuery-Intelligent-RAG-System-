@@ -17,12 +17,6 @@ import time
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.conv")
 warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
 
-try:
-    import logfire
-    logfire.configure(send_to_logfire="if-token-present")
-except Exception as _logfire_err:
-    logfire = None
-
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +25,18 @@ from pydantic import BaseModel, Field, EmailStr
 from contextlib import asynccontextmanager
 
 from config import DEFAULT_CONFIG
+
+try:
+    import logfire
+    _token = DEFAULT_CONFIG.logfire_token or os.getenv("LOGFIRE_TOKEN")
+    logfire.configure(
+        token=_token if _token else None,
+        service_name=DEFAULT_CONFIG.logfire_service_name,
+        send_to_logfire="if-token-present",
+    )
+except Exception as _logfire_err:
+    logfire = None
+
 from postgres_memory import PostgresMemory
 from retrieval_agent import RetrievalAgent
 from memory_summarizer import MemorySummarizer
