@@ -45,8 +45,6 @@ export default function App() {
             {/* Protected dashboard / layout */}
             <Route path="/" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
               <Route index element={<Navigate to="/chat" replace />} />
-              <Route path="dashboard" element={<Navigate to="/chat" replace />} />
-              <Route path="documents" element={<Navigate to="/chat" replace />} />
               <Route path="chat" element={<RagChat />} />
               <Route path="profile" element={<Profile />} />
               <Route path="admin" element={
