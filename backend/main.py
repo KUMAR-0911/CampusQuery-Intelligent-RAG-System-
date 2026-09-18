@@ -351,7 +351,6 @@ async def get_current_admin(user: dict = Depends(get_current_user)) -> dict:
 
 import smtplib
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
 
 # Dedicated thread pool for non-blocking OTP email dispatching
@@ -370,52 +369,30 @@ class ResendOTPRequest(BaseModel):
     email: EmailStr
 
 
-def _build_otp_message(to_email: str, otp: str, from_header: str, from_addr: str, sender_domain: str) -> MIMEMultipart:
-    """Construct the OTP email message with all RFC-5322 headers for deliverability."""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Your CampusQuery verification code is {otp}"
+def _build_otp_message(to_email: str, otp: str, from_header: str, from_addr: str, sender_domain: str) -> MIMEText:
+    """Build a plain-text OTP email optimized for inbox delivery (anti-spam).
+
+    Why plain-text only:
+    - HTML emails from free Gmail accounts are heavily penalized by spam filters
+    - MIMEMultipart 'alternative' with HTML triggers Bayesian spam classifiers
+    - Plain text emails from Gmail have near-perfect inbox placement rates
+    """
+    body = (
+        f"Hi,\n\n"
+        f"Your verification code for CampusQuery is:\n\n"
+        f"    {otp}\n\n"
+        f"This code expires in 10 minutes.\n\n"
+        f"If you did not request this code, you can safely ignore this email.\n\n"
+        f"- CampusQuery Team"
+    )
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"Verify your CampusQuery account"
     msg["From"] = from_header
     msg["To"] = to_email
     msg["Reply-To"] = from_addr
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=sender_domain)
-    msg["X-Mailer"] = "CampusQuery-Mailer"
-
-    text_content = (
-        f"CampusQuery Verification Code\n\n"
-        f"Your verification OTP code is: {otp}\n\n"
-        f"This code is valid for 10 minutes. If you did not request this, please ignore this email."
-    )
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0f172a; padding: 30px 15px; margin: 0;">
-        <div style="max-width: 500px; margin: 0 auto; background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 32px; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);">
-          <div style="text-align: center; margin-bottom: 24px;">
-            <div style="display: inline-block; background: linear-gradient(135deg, #6366f1, #a855f7); border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 20px; color: #ffffff; letter-spacing: 0.5px;">
-              CampusQuery
-            </div>
-          </div>
-          <h2 style="font-size: 20px; font-weight: 600; text-align: center; margin-top: 0; margin-bottom: 12px; color: #ffffff;">Verification Code</h2>
-          <p style="font-size: 14px; color: #94a3b8; text-align: center; line-height: 1.5; margin-bottom: 28px;">
-            Use the 6-digit verification code below to complete your authentication.
-          </p>
-          <div style="background: #0f172a; border: 1px solid #475569; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 28px;">
-            <span style="font-family: monospace, Courier, monospace; font-size: 34px; font-weight: 700; letter-spacing: 8px; color: #818cf8; text-shadow: 0 0 12px rgba(99, 102, 241, 0.4);">{otp}</span>
-          </div>
-          <p style="font-size: 13px; color: #64748b; text-align: center; margin-bottom: 0;">
-            Code expires in <strong>10 minutes</strong>. If you did not request this code, please safely ignore this email.
-          </p>
-        </div>
-      </body>
-    </html>
-    """
-    msg.attach(MIMEText(text_content, "plain", "utf-8"))
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
     return msg
 
 
