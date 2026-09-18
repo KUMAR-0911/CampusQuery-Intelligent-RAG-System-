@@ -55,11 +55,17 @@ from models import UserManager, UserRole, UserStatus
 
 
 def clean_markdown_text(text: str) -> str:
-    """Thoroughly strip all *, #, --, unnecessary divider symbols, and excessive spacing from response text."""
+    """Thoroughly strip all *, #, --, unnecessary divider symbols, and eliminate blank lines between paragraphs."""
     if not text:
         return ""
+    # 0. Strip citation markers and references ([1], [Source: ...], [Document Chunk 1])
+    cleaned = re.sub(r'\[\d+\]', '', text)
+    cleaned = re.sub(r'\[Document Chunk\s*\d*.*?\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\[Source:?.*?\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\[\s*filename.*?\s*\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(?i)(^|\n)(citations?|sources?):\s*[\s\S]*$', '', cleaned)
     # 1. Strip markdown headings (# Title -> Title)
-    cleaned = re.sub(r'(?m)^[ \t]*#{1,6}[ \t]*', '', text)
+    cleaned = re.sub(r'(?m)^[ \t]*#{1,6}[ \t]*', '', cleaned)
     # 2. Strip all # characters anywhere in the response
     cleaned = cleaned.replace('#', '')
     # 3. Strip bold / italic asterisks (**text** or *text* -> text)
@@ -75,13 +81,10 @@ def clean_markdown_text(text: str) -> str:
     cleaned = cleaned.replace('—', ' ').replace('–', ' ')
     # 8. Strip leading bullet dashes (- item -> item) if followed by space
     cleaned = re.sub(r'(?m)^[ \t]*-[ \t]+', '', cleaned)
-    # 9. Clean horizontal spacing on each line (collapse 2+ spaces, trim ends)
+    # 9. Clean horizontal spacing on each line and remove empty blank lines
     lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in cleaned.splitlines()]
-    cleaned = '\n'.join(lines)
-    # 10. Collapse multiple empty lines between list items (e.g., '1. Item\n\n2. Item' -> '1. Item\n2. Item')
-    cleaned = re.sub(r'(\d+\..*?)\n\n+(?=\d+\.)', r'\1\n', cleaned)
-    # 11. Clean up multiple blank lines resulting from stripped headers/dividers
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    non_empty_lines = [line for line in lines if line]
+    cleaned = '\n'.join(non_empty_lines)
     return cleaned.strip()
 
 
@@ -259,6 +262,10 @@ class ChangePassword(BaseModel):
     new_password: str
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     """Input required for one user-scoped chat request."""
     question: str = Field(min_length=1)
@@ -281,7 +288,14 @@ async def get_current_user(request: Request, um: UserManager = Depends(get_user_
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
     )
-    token = request.cookies.get("access_token")
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        token = request.query_params.get("token")
     if not token:
         raise credentials_exception
     payload = auth.decode_access_token(token, expected_type="access")
@@ -425,7 +439,20 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         secure=True,
     )
     
-    return {"message": "Login successful", "user": {"email": user["email"], "role": user["role"], "status": user["status"]}}
+    return {
+        "message": "Login successful",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "name": user.get("name") or user["email"].split("@")[0],
+            "nationality": user.get("nationality") or "Not specified",
+            "email": user["email"],
+            "role": user["role"],
+            "status": user["status"]
+        }
+    }
 
 
 @app.post("/forgot-password")
@@ -467,12 +494,20 @@ def change_password(data: ChangePassword, current_user: dict = Depends(get_curre
 
 
 @app.post("/refresh")
-def refresh_token(request: Request, response: Response, um: UserManager = Depends(get_user_manager)):
-    refresh_token = request.cookies.get("refresh_token")
-    if not refresh_token:
+async def refresh_token(request: Request, response: Response, data: Optional[RefreshTokenRequest] = None, um: UserManager = Depends(get_user_manager)):
+    refresh_token_val = None
+    if data and data.refresh_token:
+        refresh_token_val = data.refresh_token
+    if not refresh_token_val:
+        refresh_token_val = request.cookies.get("refresh_token")
+    if not refresh_token_val:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            refresh_token_val = auth_header.split(" ", 1)[1].strip()
+    if not refresh_token_val:
         raise HTTPException(status_code=401, detail="Refresh token missing")
         
-    payload = auth.decode_access_token(refresh_token, expected_type="refresh")
+    payload = auth.decode_access_token(refresh_token_val, expected_type="refresh")
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
         
@@ -482,6 +517,7 @@ def refresh_token(request: Request, response: Response, um: UserManager = Depend
         raise HTTPException(status_code=401, detail="Invalid user or inactive account")
         
     access_token = auth.create_access_token(data={"sub": user["email"]})
+    new_refresh_token = auth.create_refresh_token(data={"sub": user["email"]})
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -489,7 +525,19 @@ def refresh_token(request: Request, response: Response, um: UserManager = Depend
         samesite="none",
         secure=True,
     )
-    return {"message": "Token refreshed"}
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        samesite="none",
+        secure=True,
+    )
+    return {
+        "message": "Token refreshed",
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
 
 @app.post("/logout")
 def logout(response: Response):
@@ -722,7 +770,12 @@ async def websocket_chat(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
             question = str(data.get("question", "")).strip()
-            token = data.get("token") or websocket.cookies.get("access_token")
+            token = (
+                data.get("token")
+                or websocket.query_params.get("token")
+                or websocket.cookies.get("access_token")
+                or (websocket.headers.get("authorization") or "").replace("Bearer ", "").strip()
+            )
 
             if not question:
                 continue
@@ -736,8 +789,8 @@ async def websocket_chat(websocket: WebSocket):
                     user = um.get_user_by_email(payload.get("sub"))
 
             if not user or user.get("status") != UserStatus.ACTIVE.value:
-                await websocket.send_json({"type": "error", "message": "Authentication required"})
-                await websocket.close()
+                await websocket.send_json({"type": "error", "message": "Authentication required. Please log in again."})
+                await websocket.close(code=1008)
                 break
 
             user_id = str(user["id"])

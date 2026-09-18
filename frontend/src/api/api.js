@@ -1,7 +1,24 @@
 /**
- * Native Fetch API client with credentials, automatic token refresh, and standardized response.
+ * Native Fetch API client with credentials, Bearer token authorization, automatic token refresh, and standardized response.
  */
-const API_URL = import.meta.env.VITE_API_URL || 'https://resumetool.onrender.com';
+export const API_URL = import.meta.env.VITE_API_URL || 'https://resumetool.onrender.com';
+
+export const getAccessToken = () => localStorage.getItem('access_token');
+export const getRefreshToken = () => localStorage.getItem('refresh_token');
+
+export const setTokens = (tokens) => {
+  if (tokens?.access_token) {
+    localStorage.setItem('access_token', tokens.access_token);
+  }
+  if (tokens?.refresh_token) {
+    localStorage.setItem('refresh_token', tokens.refresh_token);
+  }
+};
+
+export const clearTokens = () => {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+};
 
 let isRefreshing = false;
 let failedQueue = [];
@@ -23,6 +40,12 @@ async function executeFetch(endpoint, options = {}) {
   const url = endpoint.startsWith('http') ? endpoint : `${base}${cleanPath}`;
 
   const headers = { ...options.headers };
+
+  // Attach Bearer token if present
+  const accessToken = getAccessToken();
+  if (accessToken && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
 
   // If sending JSON body, set Content-Type unless it's FormData
   if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
@@ -65,8 +88,9 @@ async function executeFetch(endpoint, options = {}) {
     };
     error.config = { endpoint, options };
 
-    // 401 Unauthorized handling for automatic token refresh
-    if (response.status === 401 && !options._retry) {
+    // 401 Unauthorized handling for automatic token refresh (skip if calling /login or /refresh itself)
+    const isAuthEndpoint = endpoint.includes('/login') || endpoint.includes('/refresh') || endpoint.includes('/register');
+    if (response.status === 401 && !options._retry && !isAuthEndpoint) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
@@ -77,16 +101,35 @@ async function executeFetch(endpoint, options = {}) {
       isRefreshing = true;
 
       try {
-        await fetch(`${API_URL}/refresh`, {
+        const refreshTok = getRefreshToken();
+        const refreshHeaders = { 'Content-Type': 'application/json' };
+        if (refreshTok) {
+          refreshHeaders['Authorization'] = `Bearer ${refreshTok}`;
+        }
+
+        const refreshRes = await fetch(`${base}/refresh`, {
           method: 'POST',
+          headers: refreshHeaders,
+          body: JSON.stringify({ refresh_token: refreshTok }),
           credentials: 'include',
         });
+
+        if (!refreshRes.ok) {
+          throw new Error('Refresh token invalid');
+        }
+
+        const refreshData = await refreshRes.json();
+        if (refreshData?.access_token) {
+          setTokens(refreshData);
+        }
+
         isRefreshing = false;
-        processQueue(null);
+        processQueue(null, refreshData?.access_token);
         return executeFetch(endpoint, options);
       } catch (refreshErr) {
         isRefreshing = false;
         processQueue(refreshErr, null);
+        clearTokens();
         if (
           !window.location.pathname.startsWith('/login') &&
           !window.location.pathname.startsWith('/register') &&

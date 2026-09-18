@@ -4,9 +4,30 @@ import {
   Send, Trash2, Paperclip, FileText,
   Loader2, Plus, X, UploadCloud, Briefcase, GraduationCap, Award
 } from 'lucide-react';
-import api, { getErrorMessage } from '../api/api';
+import api, { getErrorMessage, getAccessToken, API_URL } from '../api/api';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+
+const getWebSocketUrl = (token) => {
+  const base = (API_URL || '').replace(/\/+$/, '');
+  let wsBase;
+  if (base.startsWith('https://')) {
+    wsBase = base.replace('https://', 'wss://');
+  } else if (base.startsWith('http://')) {
+    wsBase = base.replace('http://', 'ws://');
+  } else if (base.startsWith('//')) {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsBase = `${wsProto}${base}`;
+  } else {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsBase = `${wsProto}//${window.location.host}`;
+  }
+  let url = `${wsBase}/ws/chat`;
+  if (token) {
+    url += `?token=${encodeURIComponent(token)}`;
+  }
+  return url;
+};
 
 export default function RagChat() {
   const { user } = useAuth();
@@ -121,16 +142,55 @@ export default function RagChat() {
     if (!customQuestion) setInput('');
     setLoading(true);
 
-    try {
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsHost = window.location.hostname || 'localhost';
-      const wsUrl = `${wsProtocol}//${wsHost}:8000/ws/chat`;
+    const token = getAccessToken();
+    let streamEnded = false;
+    let fallbackTriggered = false;
 
+    const triggerHttpFallback = async (reason) => {
+      if (fallbackTriggered || streamEnded) return;
+      fallbackTriggered = true;
+      console.warn(`Falling back to HTTP API /chat (${reason})`);
+      try {
+        const res = await api.post('/chat', { question });
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            updated[updated.length - 1] = {
+              role: 'assistant',
+              content: res.data.answer,
+              retrievedChunks: res.data.retrieved_chunks || [],
+              time: new Date(),
+            };
+          }
+          return updated;
+        });
+      } catch (restErr) {
+        const errorMsg = getErrorMessage(restErr);
+        toast.error(errorMsg);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            updated[updated.length - 1] = {
+              role: 'assistant',
+              content: `⚠️ Failed to generate answer: ${errorMsg}`,
+              time: new Date(),
+            };
+          }
+          return updated;
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    try {
+      const wsUrl = getWebSocketUrl(token);
       const ws = new WebSocket(wsUrl);
-      let streamEnded = false;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ question }));
+        ws.send(JSON.stringify({ question, token }));
       };
 
       ws.onmessage = (event) => {
@@ -155,7 +215,7 @@ export default function RagChat() {
               if (lastMsg && lastMsg.role === 'assistant') {
                 updated[updated.length - 1] = {
                   ...lastMsg,
-                  content: lastMsg.content + data.text,
+                  content: (lastMsg.content || '') + data.text,
                 };
               }
               return updated;
@@ -179,43 +239,59 @@ export default function RagChat() {
             ws.close();
             setLoading(false);
           } else if (data.type === 'error') {
-            toast.error(data.message || 'WebSocket Error');
-            ws.close();
-            setLoading(false);
+            const errMsg = data.message || 'WebSocket Error';
+            toast.error(errMsg);
+            if (errMsg.toLowerCase().includes('auth')) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastMsg = updated[updated.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                  updated[updated.length - 1] = {
+                    ...lastMsg,
+                    content: `⚠️ Authentication required. Please log in again.`,
+                  };
+                }
+                return updated;
+              });
+              setLoading(false);
+              ws.close();
+            } else {
+              triggerHttpFallback(errMsg);
+            }
           }
         } catch (e) {
           console.error('Error parsing WS message:', e);
         }
       };
 
-      ws.onerror = async (err) => {
-        if (!streamEnded) {
-          console.warn('WebSocket stream notice, falling back to HTTP API:', err);
-          try {
-            const res = await api.post('/chat', { question });
+      ws.onerror = () => {
+        triggerHttpFallback('WebSocket connection error');
+      };
+
+      ws.onclose = (event) => {
+        if (!streamEnded && !fallbackTriggered) {
+          if (event.code === 1008) {
+            toast.error('Authentication required. Please log in again.');
             setMessages((prev) => {
               const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: 'assistant',
-                content: res.data.answer,
-                retrievedChunks: res.data.retrieved_chunks || [],
-                time: new Date(),
-              };
+              const lastMsg = updated[updated.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                updated[updated.length - 1] = {
+                  ...lastMsg,
+                  content: '⚠️ Authentication required. Please log in again.',
+                };
+              }
               return updated;
             });
-          } catch (restErr) {
-            const errorMsg = getErrorMessage(restErr);
-            toast.error(errorMsg);
-          } finally {
             setLoading(false);
+          } else {
+            triggerHttpFallback('WebSocket disconnected');
           }
         }
       };
 
     } catch (err) {
-      const errorMsg = getErrorMessage(err);
-      toast.error(errorMsg);
-      setLoading(false);
+      triggerHttpFallback('WebSocket initialization failed');
     } finally {
       inputRef.current?.focus();
     }
@@ -376,9 +452,8 @@ export default function RagChat() {
               .replace(/(^|\n)[ \t]*-[ \t]+/g, '$1')
               .split('\n')
               .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+              .filter((line) => line.length > 0)
               .join('\n')
-              .replace(/(\d+\..*?)\n\n+(?=\d+\.)/g, '$1\n')
-              .replace(/\n{3,}/g, '\n\n')
               .trim();
             const isAssistantLoading = msg.role === 'assistant' && !cleanedText.trim();
 

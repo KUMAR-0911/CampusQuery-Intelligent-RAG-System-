@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, Zap, Eye, EyeOff } from 'lucide-react';
-import api, { getErrorMessage } from '../api/api';
+import api, { getErrorMessage, setTokens } from '../api/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
@@ -24,7 +24,10 @@ export default function Login() {
       formData.append('username', email);
       formData.append('password', password);
 
-      await api.post('/login', formData);
+      const res = await api.post('/login', formData);
+      if (res.data?.access_token) {
+        setTokens(res.data);
+      }
       
       const userRes = await api.get('/me');
 

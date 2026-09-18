@@ -1,5 +1,5 @@
 import { createContext, useState, useEffect, useContext } from 'react';
-import api from '../api/api';
+import api, { clearTokens } from '../api/api';
 
 const AuthContext = createContext(null);
 
@@ -8,7 +8,7 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Rely on cookies and interceptors to fetch the user
+    // Fetch current authenticated user
     const fetchUser = async () => {
       try {
         const res = await api.get('/me');
@@ -32,6 +32,7 @@ export const AuthProvider = ({ children }) => {
     } catch (err) {
       console.error('Logout error:', err);
     } finally {
+      clearTokens();
       setUser(null);
     }
   };

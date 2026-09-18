@@ -223,13 +223,14 @@ class RetrievalAgent:
 
     @staticmethod
     def _clean_output_text(text: str) -> str:
-        """Thoroughly strip all *, #, --, citations, unnecessary divider symbols, and excessive spacing from response text."""
+        """Thoroughly strip all *, #, --, citations, unnecessary divider symbols, and eliminate blank lines between paragraphs."""
         if not text:
             return ""
         # 0. Strip citation markers and references ([1], [Source: ...], [Document Chunk 1])
         cleaned = re.sub(r'\[\d+\]', '', text)
         cleaned = re.sub(r'\[Document Chunk\s*\d*.*?\]', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\[Source:?.*?\]', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\[\s*filename.*?\s*\]', '', cleaned, flags=re.IGNORECASE)
         # Strip trailing citations or sources section
         cleaned = re.sub(r'(?i)(^|\n)(citations?|sources?):\s*[\s\S]*$', '', cleaned)
         # 1. Strip markdown headings (# Title -> Title)
@@ -249,13 +250,10 @@ class RetrievalAgent:
         cleaned = cleaned.replace('—', ' ').replace('–', ' ')
         # 8. Strip leading bullet dashes (- item -> item) if followed by space
         cleaned = re.sub(r'(?m)^[ \t]*-[ \t]+', '', cleaned)
-        # 9. Clean horizontal spacing on each line (collapse 2+ spaces, trim ends)
+        # 9. Clean horizontal spacing on each line and remove empty blank lines
         lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in cleaned.splitlines()]
-        cleaned = '\n'.join(lines)
-        # 10. Collapse multiple empty lines between list items (e.g., '1. Item\n\n2. Item' -> '1. Item\n2. Item')
-        cleaned = re.sub(r'(\d+\..*?)\n\n+(?=\d+\.)', r'\1\n', cleaned)
-        # 11. Clean up multiple blank lines resulting from stripped headers/dividers
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        non_empty_lines = [line for line in lines if line]
+        cleaned = '\n'.join(non_empty_lines)
         return cleaned.strip()
 
     def answer(
@@ -348,7 +346,7 @@ class RetrievalAgent:
             f"{retrieved_context_str}\n\n"
             f"USER QUESTION: {question}\n\n"
             f"Instruction for reasoning and answer generation:\n"
-            f"Generate a thorough, professional, and well-structured answer based strictly on the retrieved document context. Please strictly follow the format and rules specified in your system prompt."
+            f"Directly and concisely answer the specific question asked above using the retrieved document context. Do NOT use a generic or repeated fixed template for every question. Answer only what is relevant to the question, with no blank lines between paragraphs, and adhere to all system prompt formatting rules."
         )
         messages.append(HumanMessage(content=user_message_content))
 
