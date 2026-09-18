@@ -12,6 +12,7 @@ from typing import Any, List, Optional
 from datetime import timedelta
 import random
 import time
+import asyncio
 
 # Suppress noisy library warnings and logs
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.conv")
@@ -89,6 +90,14 @@ def clean_markdown_text(text: str) -> str:
 
 
 @lru_cache(maxsize=1)
+def get_user_manager() -> UserManager:
+    """Return singleton UserManager without loading vector store, rerankers, or summarizers."""
+    if not DEFAULT_CONFIG.postgres_url:
+        raise RuntimeError("Set POSTGRES_URL before starting the FastAPI chat service.")
+    return UserManager(get_db_engine())
+
+
+@lru_cache(maxsize=1)
 def get_resources() -> tuple[PgVectorStore, RetrievalAgent, PostgresMemory, MemorySummarizer, UserManager, CampusGuardrails]:
     """Create shared model, agent, memory store, background summarizer, user manager, and guardrails."""
     if not DEFAULT_CONFIG.postgres_url:
@@ -100,7 +109,7 @@ def get_resources() -> tuple[PgVectorStore, RetrievalAgent, PostgresMemory, Memo
         summary_max_chars=DEFAULT_CONFIG.memory_summary_max_chars,
     )
     summarizer = MemorySummarizer(DEFAULT_CONFIG)
-    user_manager = UserManager(engine)
+    user_manager = get_user_manager()
     guardrails = CampusGuardrails(DEFAULT_CONFIG)
     
     return (
@@ -205,15 +214,18 @@ async def track_latency_and_metrics(request: Request, call_next):
     except Exception:
         pass
 
-    # Record metric to PostgreSQL (zero memory overhead)
+    # Record metric to PostgreSQL in background (zero response delay)
     try:
         um = get_user_manager()
-        um.log_api_metric(
-            endpoint=path,
-            method=request.method,
-            status_code=response.status_code,
-            duration_ms=duration_ms,
-            user_email=user_email,
+        asyncio.create_task(
+            asyncio.to_thread(
+                um.log_api_metric,
+                endpoint=path,
+                method=request.method,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                user_email=user_email,
+            )
         )
     except Exception:
         pass
@@ -280,9 +292,6 @@ class ChatResponse(BaseModel):
     retrieved_chunks: list[dict[str, Any]] = Field(default_factory=list)
 
 
-
-def get_user_manager() -> UserManager:
-    return get_resources()[4]
 
 async def get_current_user(request: Request, um: UserManager = Depends(get_user_manager)) -> dict:
     credentials_exception = HTTPException(

@@ -85,10 +85,13 @@ class UserManager:
 
 
     def get_user_by_email(self, email: str) -> Optional[dict[str, Any]]:
+        clean_email = (email or "").strip().lower()
+        if not clean_email:
+            return None
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT * FROM users WHERE email = :email"),
-                {"email": email},
+                text("SELECT id, name, nationality, email, hashed_password, role, status, otp_code, created_at FROM users WHERE email = :email LIMIT 1"),
+                {"email": clean_email},
             )
             row = result.mappings().first()
             return dict(row) if row else None
