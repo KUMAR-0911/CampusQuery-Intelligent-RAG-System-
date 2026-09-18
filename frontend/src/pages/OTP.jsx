@@ -13,6 +13,8 @@ export default function OTP() {
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(30);
   const inputRefs = useRef([]);
 
   useEffect(() => {
@@ -21,7 +23,30 @@ export default function OTP() {
     }
   }, [email, navigate]);
 
+  useEffect(() => {
+    let timer;
+    if (resendCooldown > 0) {
+      timer = setTimeout(() => setResendCooldown((c) => c - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [resendCooldown]);
+
   if (!email) return null;
+
+  const handleResend = async () => {
+    if (resending || resendCooldown > 0) return;
+    setResending(true);
+    setError('');
+    try {
+      await api.post('/resend-otp', { email });
+      toast.success('A new OTP code has been dispatched to your email.');
+      setResendCooldown(30);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setResending(false);
+    }
+  };
 
   const handleChange = (index, value) => {
     if (!/^\d*$/.test(value)) return;
@@ -55,6 +80,7 @@ export default function OTP() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     const otpValue = otp.join('');
     if (otpValue.length !== 6) {
       setError('Please enter the full 6-digit code.');
@@ -124,6 +150,34 @@ export default function OTP() {
             {loading ? <><span className="spinner" /> Verifying...</> : 'Verify Email'}
           </button>
         </form>
+
+        <div className="auth-links" style={{ marginTop: '1.25rem', textAlign: 'center' }}>
+          <button
+            type="button"
+            className="auth-link"
+            onClick={handleResend}
+            disabled={resending || resendCooldown > 0}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: resendCooldown > 0 || resending ? 'not-allowed' : 'pointer',
+              opacity: resendCooldown > 0 || resending ? 0.6 : 1,
+              padding: '0.5rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem'
+            }}
+          >
+            {resending ? (
+              <><span className="spinner" style={{ width: '12px', height: '12px' }} /> Resending code...</>
+            ) : resendCooldown > 0 ? (
+              `Didn't receive code? Resend in ${resendCooldown}s`
+            ) : (
+              "Didn't receive code? Resend OTP"
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );

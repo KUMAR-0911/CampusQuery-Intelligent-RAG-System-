@@ -334,8 +334,12 @@ def generate_otp() -> str:
     return str(random.randint(100000, 999999))
 
 
+class ResendOTPRequest(BaseModel):
+    email: EmailStr
+
+
 def send_otp_email(to_email: str, otp: str) -> None:
-    """Send OTP email using SMTP if configured; fallback to printing in console."""
+    """Send OTP email using SMTP if configured with fast connection timeouts; fallback to printing in console."""
     username = DEFAULT_CONFIG.smtp_username
     password = DEFAULT_CONFIG.smtp_password
     if username and password:
@@ -359,19 +363,29 @@ def send_otp_email(to_email: str, otp: str) -> None:
             msg.attach(MIMEText(text_content, "plain"))
             msg.attach(MIMEText(html_content, "html"))
 
-            with smtplib.SMTP(DEFAULT_CONFIG.smtp_server, DEFAULT_CONFIG.smtp_port) as server:
-                server.starttls()
-                server.login(username, password)
-                server.send_message(msg)
+            port = int(DEFAULT_CONFIG.smtp_port)
+            server_host = DEFAULT_CONFIG.smtp_server
+
+            if port == 465:
+                with smtplib.SMTP_SSL(server_host, port, timeout=7.0) as server:
+                    server.login(username, password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(server_host, port, timeout=7.0) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(username, password)
+                    server.send_message(msg)
             print(f"[email] OTP email successfully sent to {to_email}")
         except Exception as exc:
-            print(f"[email] Failed to send email to {to_email}: {exc}. Fallback OTP: {otp}")
+            print(f"[email] Failed to send email to {to_email}: {exc}. Fallback OTP in logs: {otp}")
     else:
         print(f"--- OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env to enable real email sending) ---")
 
 
 @app.post("/register")
-def register(data: UserRegister, um: UserManager = Depends(get_user_manager)):
+def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     name = (data.name or "").strip() or email.split("@")[0]
     nationality = (data.nationality or "").strip() or "Not specified"
@@ -386,20 +400,32 @@ def register(data: UserRegister, um: UserManager = Depends(get_user_manager)):
         otp = generate_otp()
         um.update_password(email, hashed_password)
         um.update_otp(email, otp)
-        send_otp_email(email, otp)
+        background_tasks.add_task(send_otp_email, email, otp)
         return {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
     
     hashed_password = auth.get_password_hash(data.password)
     otp = generate_otp()
     user = um.create_user(email=email, hashed_password=hashed_password, name=name, nationality=nationality, otp_code=otp)
     
-    send_otp_email(email, otp)
+    background_tasks.add_task(send_otp_email, email, otp)
     
     return {"message": "User registered. Please check email for OTP.", "email": user["email"]}
 
 
-
-
+@app.post("/resend-otp")
+def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
+    email = data.email.lower().strip()
+    user = um.get_user_by_email(email)
+    if not user:
+        return {"message": "If the account exists, a new verification code has been dispatched."}
+    
+    if user["status"] == UserStatus.ACTIVE.value:
+        return {"message": "Account is already verified. Please log in."}
+        
+    otp = generate_otp()
+    um.update_otp(email, otp)
+    background_tasks.add_task(send_otp_email, email, otp)
+    return {"message": "A new verification code has been dispatched to your email."}
 
 
 @app.post("/verify-otp")
@@ -418,7 +444,6 @@ def verify_otp(data: OTPVerify, um: UserManager = Depends(get_user_manager)):
     um.update_user_status(email, UserStatus.ACTIVE.value)
     um.update_otp(email, None)
     return {"message": "Email verified successfully."}
-
 
 
 @app.post("/login")
@@ -466,7 +491,7 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
 
 
 @app.post("/forgot-password")
-def forgot_password(data: ForgotPassword, um: UserManager = Depends(get_user_manager)):
+def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower()
     user = um.get_user_by_email(email)
     if not user:
@@ -474,7 +499,7 @@ def forgot_password(data: ForgotPassword, um: UserManager = Depends(get_user_man
     
     otp = generate_otp()
     um.update_otp(email, otp)
-    send_otp_email(email, otp)
+    background_tasks.add_task(send_otp_email, email, otp)
     return {"message": "If the email is registered, an OTP was sent."}
 
 
