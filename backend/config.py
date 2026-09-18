@@ -167,6 +167,8 @@ class RetrievalConfig:
     # ── Observability (Pydantic Logfire) ──
     logfire_token: str | None = os.getenv("LOGFIRE_TOKEN")
     logfire_service_name: str = os.getenv("LOGFIRE_SERVICE_NAME", "campusquery-backend")
+    logfire_scrubbing: bool = os.getenv("LOGFIRE_SCRUBBING", "true").lower() in ("true", "1", "yes")
+
 
 
 DEFAULT_CONFIG = RetrievalConfig()

@@ -29,10 +29,15 @@ from config import DEFAULT_CONFIG
 try:
     import logfire
     _token = DEFAULT_CONFIG.logfire_token or os.getenv("LOGFIRE_TOKEN")
+    _security_patterns = [
+        "password", "new_password", "current_password", "hashed_password",
+        "otp", "otp_code", "token", "auth", "secret", "key", "access_token", "refresh_token"
+    ]
     logfire.configure(
         token=_token if _token else None,
         service_name=DEFAULT_CONFIG.logfire_service_name,
         send_to_logfire="if-token-present",
+        scrubbing=logfire.ScrubbingOptions(extra_patterns=_security_patterns) if DEFAULT_CONFIG.logfire_scrubbing else False,
     )
 except Exception as _logfire_err:
     logfire = None
