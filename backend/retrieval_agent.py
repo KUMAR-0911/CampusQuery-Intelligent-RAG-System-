@@ -23,7 +23,12 @@ class RetrievalAgent:
                 "for example pc-xxxxxxxx."
             )
 
-        from openai import OpenAI
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "Install LangChain OpenAI integration with pip install -r requirements.txt"
+            ) from exc
 
         self.config = config
         self._last_retrieved_chunks: list[dict[str, Any]] = []
@@ -34,15 +39,15 @@ class RetrievalAgent:
         else:
             resolved_model = raw_model
 
-        self.model_name = resolved_model
-
-        # Reasoning & answer generation model via Portkey / Groq (using openai SDK directly)
-        self.client = OpenAI(
+        # Reasoning & answer generation model via Portkey / Groq
+        self.llm = ChatOpenAI(
+            model=resolved_model,
             api_key=config.portkey_api_key,
             base_url="https://api.portkey.ai/v1",
             default_headers={
                 "x-portkey-config": config.portkey_config_slug
             },
+            temperature=0.1,
         )
 
         self.query_rewriter_model = getattr(config, "query_rewriter_model", "Qwen/Qwen3-0.6B")
@@ -282,6 +287,8 @@ class RetrievalAgent:
         print(f"[pipeline:step-2] RETRIEVAL: Selected top {len(chunks)} grounded chunk(s) for answer reasoning.")
 
         # Step 3: Reasoning Model (Answer Generation)
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
         # Build retrieved document context
         if chunks:
             context_blocks = []
@@ -300,10 +307,10 @@ class RetrievalAgent:
                 "politely inform them that no document has been uploaded yet, and invite them to upload their resume.]"
             )
 
-        messages: list[dict[str, str]] = []
+        messages: list[Any] = []
 
-        # System prompt
-        messages.append({"role": "system", "content": self.config.system_prompt})
+        # System prompt with strict constraint against *, #, and --
+        messages.append(SystemMessage(content=self.config.system_prompt))
 
         # Persistent user memory / profile
         profile_context = ""
@@ -315,14 +322,15 @@ class RetrievalAgent:
 
         # Conversation turns for multi-turn awareness
         if conversation_context:
+            # The user requested exactly the last 2 user and 2 assistant messages (last 4 messages)
             recent = conversation_context.get("recent_messages", [])[-4:]
             for m in recent:
                 role = m.get("role")
                 content = m.get("content", "")
                 if role == "user":
-                    messages.append({"role": "user", "content": content})
+                    messages.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    messages.append({"role": "assistant", "content": content})
+                    messages.append(AIMessage(content=content))
             if recent:
                 print(f"[pipeline:step-3] Injected {len(recent)} recent conversational turn(s)")
 
@@ -334,17 +342,17 @@ class RetrievalAgent:
             f"Instruction for reasoning and answer generation:\n"
             f"Generate a thorough, professional, and well-structured answer based strictly on the retrieved document context. Please strictly follow the format and rules specified in your system prompt."
         )
-        messages.append({"role": "user", "content": user_message_content})
+        messages.append(HumanMessage(content=user_message_content))
 
-        print(f"[pipeline:step-3] Invoking Reasoning Model: {self.model_name} via Portkey Gateway...")
+        print(f"[pipeline:step-3] Invoking Reasoning Model: {self.llm.model_name} via Portkey Gateway...")
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=0.1,
-            )
-            answer = response.choices[0].message.content or ""
-            print(f"[pipeline:step-3] Raw answer received from {self.model_name} ({len(answer)} chars).")
+            response = self.llm.invoke(messages)
+            content = getattr(response, "content", "")
+            if isinstance(content, list):
+                answer = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            else:
+                answer = str(content)
+            print(f"[pipeline:step-3] Raw answer received from {self.llm.model_name} ({len(answer)} chars).")
         except Exception as exc:
             print(f"[pipeline:step-3] Reasoning model generation error: {exc}")
             answer = "I encountered an error generating the answer. Please try again."

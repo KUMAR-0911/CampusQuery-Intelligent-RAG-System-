@@ -9,7 +9,7 @@ requests
 pypdf
 langchain-core
 langchain-text-splitters
-openai
+langchain-openai
 groq
 portkey-ai
 huggingface-hub

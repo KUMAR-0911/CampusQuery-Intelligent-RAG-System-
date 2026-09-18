@@ -80,12 +80,15 @@ class MemorySummarizer:
         else:
             api_key = self.config.groq_api_key or self.config.portkey_api_key or "sk-dummy"
 
-        from openai import OpenAI
+        from langchain_openai import ChatOpenAI
 
-        self._llm = OpenAI(
+        self._llm = ChatOpenAI(
+            model=self.model,
             api_key=api_key,
             base_url=base_url,
             default_headers=headers if headers else None,
+            temperature=self.config.summarizer_temperature,
+            max_tokens=self.config.summarizer_max_tokens,
         )
         print(f"[memory_summarizer] {self.provider.capitalize()} small model initialized: {self.model}")
         return self._llm
@@ -130,13 +133,8 @@ class MemorySummarizer:
                 raw = response.choices[0].message.content or ""
             else:
                 llm = self._get_llm()
-                resp = llm.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.config.summarizer_temperature,
-                    max_tokens=self.config.summarizer_max_tokens,
-                )
-                raw = resp.choices[0].message.content or ""
+                resp = llm.invoke(prompt)
+                raw = getattr(resp, "content", str(resp)).strip()
 
             print(f"[memory_summarizer] Raw output from {self.model}:\n{raw[:200]}...")
             parsed = self.parse_memory_json(raw)
