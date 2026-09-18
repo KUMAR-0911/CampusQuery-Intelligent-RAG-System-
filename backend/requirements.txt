@@ -19,4 +19,5 @@ pgvector
 argon2-cffi
 email-validator
 logfire[fastapi]
+numpy
 
