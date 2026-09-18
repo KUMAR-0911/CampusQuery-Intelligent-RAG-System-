@@ -145,6 +145,25 @@ class UserManager:
             )
             return [dict(row) for row in result.mappings().all()]
 
+    def delete_user(self, user_id: int) -> bool:
+        """Permanently delete a user and associated metrics from the database."""
+        with self.engine.begin() as conn:
+            user = self.get_user_by_id(user_id)
+            if not user:
+                return False
+            user_email = user.get("email")
+            if user_email:
+                conn.execute(
+                    text("DELETE FROM api_metrics WHERE user_id = :uid OR user_email = :email"),
+                    {"uid": str(user_id), "email": user_email},
+                )
+            res = conn.execute(
+                text("DELETE FROM users WHERE id = :id"),
+                {"id": user_id},
+            )
+            return res.rowcount > 0
+
+
     def log_api_metric(
         self,
         endpoint: str,

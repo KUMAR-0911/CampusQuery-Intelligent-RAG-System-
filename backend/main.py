@@ -539,6 +539,35 @@ def update_user_status_admin(user_id: int, status: str, admin_user: dict = Depen
     return {"message": f"User status updated to {status}"}
 
 
+@app.delete("/users/{user_id}")
+def delete_user_admin(
+    user_id: int,
+    admin_user: dict = Depends(get_current_admin),
+    um: UserManager = Depends(get_user_manager),
+):
+    """Admin endpoint to permanently delete a user and clear their indexed resume chunks & chat memory."""
+    user = um.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user["id"] == admin_user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete your own admin account.")
+
+    try:
+        store, _, memory, _, _, _ = get_resources()
+        store.delete_user_chunks(str(user_id))
+        memory.clear_chat(str(user_id))
+    except Exception as exc:
+        print(f"[admin:delete_user] Notice during resource cleanup: {exc}")
+
+    deleted = um.delete_user(user_id)
+    if not deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete user from database")
+
+    return {"message": f"User {user['email']} has been permanently deleted."}
+
+
+
 @app.get("/admin/metrics/latency")
 def get_latency_metrics_admin(
     hours: int = 24,
