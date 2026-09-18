@@ -6,7 +6,10 @@ box — just set POSTGRES_URL in your .env file.
 
 from __future__ import annotations
 
+import collections
 import json
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +34,8 @@ class PostgresMemory:
         engine: Engine,
         recent_messages: int = 5,
         summary_max_chars: int = 6000,
+        cache_ttl_seconds: float = 60.0,
+        cache_maxsize: int = 1024,
     ) -> None:
         if recent_messages <= 0:
             raise ValueError("recent_messages must be greater than zero.")
@@ -38,6 +43,10 @@ class PostgresMemory:
         self.recent_messages = recent_messages
         self.summary_max_chars = summary_max_chars
         self.engine = engine
+        self._cache_ttl = cache_ttl_seconds
+        self._cache_maxsize = cache_maxsize
+        self._cache: collections.OrderedDict[str, tuple[float, dict[str, Any]]] = collections.OrderedDict()
+        self._cache_lock = threading.Lock()
         self._create_tables()
 
     # ------------------------------------------------------------------
@@ -80,8 +89,16 @@ class PostgresMemory:
     # ------------------------------------------------------------------
 
     def context_for(self, user_id: str) -> dict[str, Any]:
-        """Return durable facts, rolling summary, and the last N messages for *user_id*."""
+        """Return durable facts, rolling summary, and the last N messages for *user_id* (O(1) LRU cached)."""
         uid = user_id.strip()
+        now = time.time()
+
+        with self._cache_lock:
+            if uid in self._cache:
+                ts, data = self._cache[uid]
+                if now - ts < self._cache_ttl:
+                    self._cache.move_to_end(uid)
+                    return dict(data)
 
         with self.engine.connect() as conn:
             # Durable memory row
@@ -122,12 +139,19 @@ class PostgresMemory:
             f"Rolling conversation summary:\n{summary}"
         ).strip()
 
-        return {
+        result = {
             "summary": formatted,
             "facts": facts,
             "rolling_summary": summary,
             "recent_messages": [{"role": r["role"], "content": r["content"]} for r in recent],
         }
+
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_maxsize and uid not in self._cache:
+                self._cache.popitem(last=False)
+            self._cache[uid] = (now, dict(result))
+
+        return result
 
     def message_count(self, user_id: str) -> int:
         """Return the number of *uncompacted* messages for a user."""
@@ -164,7 +188,7 @@ class PostgresMemory:
     # ------------------------------------------------------------------
 
     def add_message(self, user_id: str, role: str, content: str) -> None:
-        """Append a single chat message to persistent history."""
+        """Append a single chat message to persistent history and invalidate memory cache."""
         if role not in {"user", "assistant"}:
             raise ValueError("role must be 'user' or 'assistant'.")
 
@@ -179,6 +203,8 @@ class PostgresMemory:
                 ),
                 {"uid": uid, "role": role, "content": content, "now": datetime.now(timezone.utc)},
             )
+        with self._cache_lock:
+            self._cache.pop(uid, None)
             
     def clear_chat(self, user_id: str) -> None:
         """Delete all conversation messages and semantic memory for a user to start completely fresh."""
@@ -192,7 +218,10 @@ class PostgresMemory:
                 text("DELETE FROM user_memories WHERE user_id = :uid"),
                 {"uid": uid},
             )
+        with self._cache_lock:
+            self._cache.pop(uid, None)
         print(f"[postgres] Cleared chat history and semantic memory for user '{uid}'.")
+
 
     # ------------------------------------------------------------------
     # Memory compaction
@@ -276,4 +305,8 @@ class PostgresMemory:
                 {"uid": uid, "keep": self.recent_messages},
             )
 
+        with self._cache_lock:
+            self._cache.pop(uid, None)
+
         print(f"[postgres] Compacted memory for user '{uid}'.")
+

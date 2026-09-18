@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import re
+import threading
 from typing import Any
 
 from config import RetrievalConfig
@@ -32,6 +34,10 @@ class RetrievalAgent:
 
         self.config = config
         self._last_retrieved_chunks: list[dict[str, Any]] = []
+        self._rewrite_cache: collections.OrderedDict[str, dict[str, str]] = collections.OrderedDict()
+        self._rewrite_cache_lock = threading.Lock()
+        self._rewrite_cache_maxsize = 256
+
 
         raw_model = config.groq_model or "qwen3:32b-a3b"
         if "qwen3" in raw_model.lower() and ("32b" in raw_model.lower() or "30b" in raw_model.lower()):
@@ -116,6 +122,15 @@ class RetrievalAgent:
             f"Output JSON:"
         )
 
+        can_cache = not summary_str and not history_str
+        clean_q = question.strip().lower()
+
+        if can_cache:
+            with self._rewrite_cache_lock:
+                if clean_q in self._rewrite_cache:
+                    self._rewrite_cache.move_to_end(clean_q)
+                    return dict(self._rewrite_cache[clean_q])
+
         print(f"[rewrite] Context-Aware Query Rewriting: {recent_count} recent turns, {len(summary_str)} chars profile memory.")
 
         raw = None
@@ -145,6 +160,7 @@ class RetrievalAgent:
             except Exception as e:
                 print(f"[rewrite] Primary LLM rewrite failed: {e}")
 
+        final_res = {"intent": "TARGETED", "rewritten_query": question}
         if raw:
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             if match:
@@ -154,11 +170,18 @@ class RetrievalAgent:
                     rewritten_query = data.get("rewritten_query", question).strip()
                     if intent not in ["TARGETED", "SKILL_GAP", "RESUME_SCORE"]:
                         intent = "TARGETED"
-                    return {"intent": intent, "rewritten_query": rewritten_query}
+                    final_res = {"intent": intent, "rewritten_query": rewritten_query}
                 except Exception as parse_err:
                     print(f"[rewrite] JSON parse error: {parse_err}")
 
-        return {"intent": "TARGETED", "rewritten_query": question}
+        if can_cache:
+            with self._rewrite_cache_lock:
+                if len(self._rewrite_cache) >= self._rewrite_cache_maxsize and clean_q not in self._rewrite_cache:
+                    self._rewrite_cache.popitem(last=False)
+                self._rewrite_cache[clean_q] = dict(final_res)
+
+        return final_res
+
 
     def retrieve_documents(
         self,

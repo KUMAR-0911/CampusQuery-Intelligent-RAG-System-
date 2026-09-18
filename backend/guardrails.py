@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import collections
 import json
 import re
+import threading
 from dataclasses import dataclass
 
 from config import RetrievalConfig, DEFAULT_CONFIG
+
+_ALLOWED_FAST_PHRASES = frozenset({
+    "hi", "hello", "hey", "hey there", "good morning", "good afternoon", "good evening",
+    "how are you", "what can you do", "who are you", "help", "thank you", "thanks", "bye", "goodbye"
+})
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,10 @@ class CampusGuardrails:
         self.guard_block_threshold = block_threshold if block_threshold is not None else cfg.guard_block_threshold
         self.is_llama_guard = "llama-guard" in (self.model or "").lower()
         self._client = None
+        self._cache: collections.OrderedDict[tuple[str, str], GuardrailResult] = collections.OrderedDict()
+        self._cache_lock = threading.Lock()
+        self._cache_maxsize = 512
+
 
     def _get_client(self):
         if self._client is None and self.token:
@@ -69,6 +80,19 @@ class CampusGuardrails:
                 print(f"[guardrail] Remote Guardrail client preloaded successfully ({self.model}).")
 
     def _remote_check(self, text: str, direction: str) -> GuardrailResult:
+        if not text or not text.strip():
+            return GuardrailResult(True, category="allowed", confidence=1.0)
+
+        cleaned_phrase = re.sub(r"[^\w\s]", "", text).strip().lower()
+        if cleaned_phrase in _ALLOWED_FAST_PHRASES:
+            return GuardrailResult(True, category="allowed", confidence=1.0)
+
+        cache_key = (direction, cleaned_phrase)
+        with self._cache_lock:
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                return self._cache[cache_key]
+
         if not self.token:
             print("[guardrail] HF_TOKEN not set. Allowing request.")
             return GuardrailResult(True, category="allowed", confidence=1.0)
@@ -94,13 +118,14 @@ class CampusGuardrails:
                 if raw.startswith("unsafe"):
                     parts = raw.split("\n")
                     violation = parts[1].strip().upper() if len(parts) > 1 else "UNSAFE_CONTENT"
-                    return GuardrailResult(
+                    res = GuardrailResult(
                         allowed=False,
                         message=f"I cannot process this request because it was flagged by safety guardrails ({violation}). Please ask a relevant career or resume query.",
                         category=violation,
                         confidence=0.0,
                     )
-                return GuardrailResult(True, category="allowed", confidence=1.0)
+                else:
+                    res = GuardrailResult(True, category="allowed", confidence=1.0)
             except Exception as exc:
                 exc_str = str(exc)
                 if "403" in exc_str or "restricted" in exc_str or "gated" in exc_str:
@@ -110,7 +135,13 @@ class CampusGuardrails:
                     )
                 else:
                     print(f"[guardrail] Notice: Guardrail request failed ({exc}). Allowing request via fallback.")
-                return GuardrailResult(True, category="allowed", confidence=1.0)
+                res = GuardrailResult(True, category="allowed", confidence=1.0)
+
+            with self._cache_lock:
+                if len(self._cache) >= self._cache_maxsize and cache_key not in self._cache:
+                    self._cache.popitem(last=False)
+                self._cache[cache_key] = res
+            return res
 
         # Standard custom relevance prompt for generic LLMs
         output_instruction = """
@@ -152,17 +183,24 @@ Text to classify:
             score = 1.0
 
         if score >= self.guard_block_threshold:
-            return GuardrailResult(True, category="allowed", confidence=score)
+            res = GuardrailResult(True, category="allowed", confidence=score)
+        else:
+            reason = f"This request was blocked because its relevance score ({score:.2f}) is below the threshold ({self.guard_block_threshold})."
+            res = GuardrailResult(
+                False,
+                "I can help build and analyse resumes, analyse job descriptions, match jobs, "
+                "identify skill gaps, prepare cover letters and interviews, and answer career, "
+                "education, campus, programming, and technical questions. " + reason,
+                "blocked",
+                score,
+            )
 
-        reason = f"This request was blocked because its relevance score ({score:.2f}) is below the threshold ({self.guard_block_threshold})."
-        return GuardrailResult(
-            False,
-            "I can help build and analyse resumes, analyse job descriptions, match jobs, "
-            "identify skill gaps, prepare cover letters and interviews, and answer career, "
-            "education, campus, programming, and technical questions. " + reason,
-            "blocked",
-            score,
-        )
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_maxsize and cache_key not in self._cache:
+                self._cache.popitem(last=False)
+            self._cache[cache_key] = res
+        return res
+
 
     def check_input(self, text: str) -> GuardrailResult:
         """Ask the remote model to classify input, including greetings, PII, and injection."""
