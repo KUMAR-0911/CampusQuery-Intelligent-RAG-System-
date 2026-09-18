@@ -11,10 +11,17 @@ from functools import lru_cache
 from typing import Any, List, Optional
 from datetime import timedelta
 import random
+import time
 
 # Suppress noisy library warnings and logs
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.conv")
 warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
+
+try:
+    import logfire
+    logfire.configure(send_to_logfire="if-token-present")
+except Exception as _logfire_err:
+    logfire = None
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -109,8 +116,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Resume & Career Analyzer Toolkit API", version="1.0.0", lifespan=lifespan)
 
-
-
+if logfire:
+    try:
+        logfire.instrument_fastapi(app)
+        print("[logfire] Pydantic Logfire instrumented successfully (send_to_logfire='if-token-present').")
+    except Exception as _inst_err:
+        print(f"[logfire] Fastapi instrumentation notice: {_inst_err}")
 
 
 origins = [origin.strip() for origin in DEFAULT_CONFIG.cors_origins.split(",") if origin.strip()]
@@ -122,6 +133,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def track_latency_and_metrics(request: Request, call_next):
+    """Accurately measures request latency and stores metrics in PostgreSQL for P50/P95/P99 analytics."""
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start_time) * 1000.0
+
+    path = request.url.path
+    # Ignore high-frequency static/doc endpoints
+    if path in ["/", "/docs", "/redoc", "/openapi.json", "/favicon.ico"]:
+        return response
+
+    # Non-blocking user identification for per-user analytics
+    user_email = None
+    try:
+        auth_header = request.headers.get("Authorization")
+        token = None
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+        elif "access_token" in request.cookies:
+            token = request.cookies.get("access_token")
+        if token:
+            payload = auth.decode_access_token(token)
+            if payload:
+                user_email = payload.get("sub")
+    except Exception:
+        pass
+
+    # Record metric to PostgreSQL (zero memory overhead)
+    try:
+        um = get_user_manager()
+        um.log_api_metric(
+            endpoint=path,
+            method=request.method,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            user_email=user_email,
+        )
+    except Exception:
+        pass
+
+    return response
 
 
 @app.get("/")
@@ -464,10 +519,34 @@ def update_user_status_admin(user_id: int, status: str, admin_user: dict = Depen
     return {"message": f"User status updated to {status}"}
 
 
+@app.get("/admin/metrics/latency")
+def get_latency_metrics_admin(
+    hours: int = 24,
+    admin_user: dict = Depends(get_current_admin),
+    um: UserManager = Depends(get_user_manager),
+):
+    """Admin endpoint returning P50, P95, P99 API latency, per-user and per-endpoint breakdowns."""
+    return um.get_latency_metrics(hours=hours)
+
+
 @app.post("/upload")
 def upload_documents(files: List[UploadFile] = File(...), user: dict = Depends(get_current_user)):
     try:
+        if not files:
+            raise HTTPException(status_code=400, detail="Please select a resume file to upload.")
+        if len(files) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Only one resume document can be uploaded and analyzed at a time. Multi-document upload is not supported."
+            )
+
         user_id = str(user["id"])
+        store, *_ = get_resources()
+
+        # Clear previous document chunks so only one active resume is retained per user
+        store.delete_user_chunks(user_id)
+        print(f"[api:upload] Cleared prior document chunks for user '{user_id}'. Indexing single resume...")
+
         with tempfile.TemporaryDirectory(prefix="campusquery_") as temporary_directory:
             paths = []
             for idx, uploaded_file in enumerate(files):
@@ -476,12 +555,13 @@ def upload_documents(files: List[UploadFile] = File(...), user: dict = Depends(g
                 path = Path(temporary_directory) / f"{idx}_{uploaded_file.filename}"
                 path.write_bytes(uploaded_file.file.read())
                 paths.append(path)
-            
-            store, *_ = get_resources()
-            # This calls the ingestion logic using the preloaded store
+
+            # Ingestion logic using the preloaded store
             ingest_to_pgvector(paths, DEFAULT_CONFIG, user_id=user_id, store=store)
-            
-        return {"message": f"Successfully indexed {len(files)} document(s)."}
+
+        return {"message": "Successfully indexed your resume document. Ready for analysis."}
+    except HTTPException:
+        raise
     except Exception as exc:
         import traceback
         print(f"[api] Upload error: {exc!r}\n{traceback.format_exc()}")

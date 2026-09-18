@@ -18,4 +18,5 @@ sqlalchemy
 pgvector
 argon2-cffi
 email-validator
+logfire
 

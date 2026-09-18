@@ -141,7 +141,7 @@ class RetrievalAgent:
                     data = json.loads(match.group(0))
                     intent = data.get("intent", "TARGETED").strip().upper()
                     rewritten_query = data.get("rewritten_query", question).strip()
-                    if intent not in ["TARGETED", "SKILL_GAP", "JOB_MATCH", "RESUME_SCORE"]:
+                    if intent not in ["TARGETED", "SKILL_GAP", "RESUME_SCORE"]:
                         intent = "TARGETED"
                     return {"intent": intent, "rewritten_query": rewritten_query}
                 except Exception as parse_err:
@@ -168,9 +168,6 @@ class RetrievalAgent:
         elif intent_clean == "SKILL_GAP":
             top_k = 10
             rerank_top_n = 20
-        elif intent_clean == "JOB_MATCH":
-            top_k = 15
-            rerank_top_n = 30
         elif intent_clean == "RESUME_SCORE":
             top_k = 20
             rerank_top_n = 40
