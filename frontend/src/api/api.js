@@ -1,7 +1,7 @@
 /**
  * Native Fetch API client with credentials, Bearer token authorization, automatic token refresh, and standardized response.
  */
-export const API_URL = import.meta.env.VITE_API_URL || 'https://resumetool.onrender.com';
+export const API_URL = (import.meta.env.VITE_API_URL || 'https://resumetool.onrender.com').trim();
 
 export const getAccessToken = () => localStorage.getItem('access_token');
 export const getRefreshToken = () => localStorage.getItem('refresh_token');
@@ -20,6 +20,21 @@ export const clearTokens = () => {
   localStorage.removeItem('refresh_token');
 };
 
+function redirectToLogin() {
+  const currentPath = window.location.pathname;
+  const publicPaths = [
+    '/login',
+    '/register',
+    '/verify-otp',
+    '/forgot-password',
+    '/reset-password',
+  ];
+  const isPublicPage = publicPaths.some((p) => currentPath.startsWith(p));
+  if (!isPublicPage) {
+    window.location.replace('/login');
+  }
+}
+
 let isRefreshing = false;
 let failedQueue = [];
 
@@ -35,13 +50,13 @@ const processQueue = (error, token = null) => {
 };
 
 async function executeFetch(endpoint, options = {}) {
-  const base = (API_URL || '').replace(/\/+$/, '');
+  const base = (API_URL || '').trim().replace(/\/+$/, '');
   const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = endpoint.startsWith('http') ? endpoint : `${base}${cleanPath}`;
 
   const headers = { ...options.headers };
 
-  // Attach Bearer token if present
+  // Attach Bearer token if present and not already explicitly overridden
   const accessToken = getAccessToken();
   if (accessToken && !headers['Authorization']) {
     headers['Authorization'] = `Bearer ${accessToken}`;
@@ -88,24 +103,60 @@ async function executeFetch(endpoint, options = {}) {
     };
     error.config = { endpoint, options };
 
-    // 401 Unauthorized handling for automatic token refresh (skip if calling /login or /refresh itself)
-    const isAuthEndpoint = endpoint.includes('/login') || endpoint.includes('/refresh') || endpoint.includes('/register');
+    // Auth endpoints that should NEVER trigger /refresh
+    const authEndpoints = [
+      '/login',
+      '/refresh',
+      '/register',
+      '/verify-otp',
+      '/resend-otp',
+      '/forgot-password',
+      '/reset-password',
+      '/logout',
+    ];
+    const isAuthEndpoint = authEndpoints.some((ep) => endpoint.includes(ep));
+
+    // Handle 401 Unauthorized for protected endpoints
     if (response.status === 401 && !options._retry && !isAuthEndpoint) {
+      const refreshTok = getRefreshToken();
+
+      // Guard: If no refresh token exists, NEVER call /refresh!
+      // This prevents useless network calls returning 401 "Refresh token missing" and breaks any loops.
+      if (!refreshTok) {
+        clearTokens();
+        localStorage.removeItem('user_profile');
+        if (isRefreshing) {
+          isRefreshing = false;
+          processQueue(new Error('No refresh token available'), null);
+        }
+        redirectToLogin();
+        return Promise.reject(error);
+      }
+
+      // If a refresh is already in progress, queue this request
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
-        }).then(() => executeFetch(endpoint, { ...options, _retry: true }));
+        }).then((newToken) => {
+          return executeFetch(endpoint, {
+            ...options,
+            _retry: true,
+            headers: {
+              ...options.headers,
+              Authorization: `Bearer ${newToken}`,
+            },
+          });
+        });
       }
 
       options._retry = true;
       isRefreshing = true;
 
       try {
-        const refreshTok = getRefreshToken();
-        const refreshHeaders = { 'Content-Type': 'application/json' };
-        if (refreshTok) {
-          refreshHeaders['Authorization'] = `Bearer ${refreshTok}`;
-        }
+        const refreshHeaders = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${refreshTok}`,
+        };
 
         const refreshRes = await fetch(`${base}/refresh`, {
           method: 'POST',
@@ -115,30 +166,36 @@ async function executeFetch(endpoint, options = {}) {
         });
 
         if (!refreshRes.ok) {
-          throw new Error('Refresh token invalid');
+          throw new Error(`Refresh failed with status ${refreshRes.status}`);
         }
 
         const refreshData = await refreshRes.json();
-        if (refreshData?.access_token) {
-          setTokens(refreshData);
+        const newAccessToken = refreshData?.access_token;
+        if (!newAccessToken) {
+          throw new Error('Refresh response did not return an access token');
         }
 
+        // Store refreshed tokens
+        setTokens(refreshData);
+
         isRefreshing = false;
-        processQueue(null, refreshData?.access_token);
-        return executeFetch(endpoint, options);
+        processQueue(null, newAccessToken);
+
+        // Retry original request with the new access token
+        return executeFetch(endpoint, {
+          ...options,
+          _retry: true,
+          headers: {
+            ...options.headers,
+            Authorization: `Bearer ${newAccessToken}`,
+          },
+        });
       } catch (refreshErr) {
         isRefreshing = false;
         processQueue(refreshErr, null);
         clearTokens();
-        if (
-          !window.location.pathname.startsWith('/login') &&
-          !window.location.pathname.startsWith('/register') &&
-          !window.location.pathname.startsWith('/verify-otp') &&
-          !window.location.pathname.startsWith('/forgot-password') &&
-          !window.location.pathname.startsWith('/reset-password')
-        ) {
-          window.location.href = '/login';
-        }
+        localStorage.removeItem('user_profile');
+        redirectToLogin();
         return Promise.reject(error);
       }
     }

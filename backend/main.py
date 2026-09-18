@@ -483,16 +483,18 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
         value=refresh_token,
         httponly=True,
         max_age=auth.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
-        samesite="lax",
-        secure=False
+        samesite="none",
+        secure=True,
+        path="/"
     )
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
         max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=False
+        samesite="none",
+        secure=True,
+        path="/"
     )
     
     return {
@@ -585,6 +587,7 @@ async def refresh_token(request: Request, response: Response, data: Optional[Ref
         httponly=True,
         samesite="none",
         secure=True,
+        path="/"
     )
     response.set_cookie(
         key="refresh_token",
@@ -592,6 +595,7 @@ async def refresh_token(request: Request, response: Response, data: Optional[Ref
         httponly=True,
         samesite="none",
         secure=True,
+        path="/"
     )
     return {
         "message": "Token refreshed",
@@ -602,8 +606,8 @@ async def refresh_token(request: Request, response: Response, data: Optional[Ref
 
 @app.post("/logout")
 def logout(response: Response):
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
+    response.delete_cookie("access_token", path="/", samesite="none", secure=True)
+    response.delete_cookie("refresh_token", path="/", samesite="none", secure=True)
     return {"message": "Logged out successfully"}
 
 
