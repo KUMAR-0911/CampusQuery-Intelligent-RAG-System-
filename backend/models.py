@@ -231,7 +231,19 @@ class UserManager:
         self._create_tables()
 
     def _create_tables(self) -> None:
-        ddl_users = """
+        try:
+            with self.engine.connect() as conn:
+                check = conn.execute(text(
+                    "SELECT (to_regclass('public.users') IS NOT NULL) AS has_users, "
+                    "(to_regclass('public.api_metrics') IS NOT NULL) AS has_metrics, "
+                    "(to_regclass('public.idx_users_lower_email') IS NOT NULL) AS has_idx"
+                )).mappings().first()
+                if check and check["has_users"] and check["has_metrics"] and check["has_idx"]:
+                    return
+        except Exception:
+            pass
+
+        ddl_batch = """
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             name VARCHAR(255),
@@ -243,8 +255,7 @@ class UserManager:
             otp_code VARCHAR(10),
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
-        """
-        ddl_metrics = """
+        CREATE INDEX IF NOT EXISTS idx_users_lower_email ON users (LOWER(email));
         CREATE TABLE IF NOT EXISTS api_metrics (
             id SERIAL PRIMARY KEY,
             user_id VARCHAR(50),
@@ -261,11 +272,7 @@ class UserManager:
         CREATE INDEX IF NOT EXISTS idx_api_metrics_user_id ON api_metrics(user_id);
         """
         with self.engine.begin() as conn:
-            conn.execute(text(ddl_users))
-            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255)"))
-            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS nationality VARCHAR(255)"))
-            conn.execute(text(ddl_metrics))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_api_metrics_user_id ON api_metrics(user_id)"))
+            conn.execute(text(ddl_batch))
 
     def _invalidate_users_cache(self) -> None:
         with self._admin_cache_lock:

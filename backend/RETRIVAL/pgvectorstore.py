@@ -72,11 +72,19 @@ class PgVectorStore:
             print(f"[vectorstore] Database ping notice during preload: {exc}")
         
     def ensure_collection(self, vector_size: int) -> None:
-        """Create the pgvector extension and the chunks table."""
+        """Create the pgvector extension and the chunks table if not existing."""
         table = self.config.pgvector_table
+        try:
+            with self.engine.connect() as conn:
+                res = conn.execute(text(f"SELECT to_regclass('public.{table}') IS NOT NULL AS exists")).scalar()
+                if res:
+                    return
+        except Exception:
+            pass
+
         with self.engine.begin() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             conn.execute(text(f"""
+                CREATE EXTENSION IF NOT EXISTS vector;
                 CREATE TABLE IF NOT EXISTS {table} (
                     id UUID PRIMARY KEY,
                     user_id VARCHAR(255),
@@ -84,16 +92,10 @@ class PgVectorStore:
                     text TEXT,
                     metadata JSONB,
                     embedding vector({vector_size})
-                )
-            """))
-            # Create HNSW index on the embedding for fast cosine similarity search
-            conn.execute(text(f"""
+                );
                 CREATE INDEX IF NOT EXISTS {table}_embedding_idx 
-                ON {table} USING hnsw (embedding vector_cosine_ops)
-            """))
-            # Index on user_id for filtering
-            conn.execute(text(f"""
-                CREATE INDEX IF NOT EXISTS {table}_user_id_idx ON {table} (user_id)
+                ON {table} USING hnsw (embedding vector_cosine_ops);
+                CREATE INDEX IF NOT EXISTS {table}_user_id_idx ON {table} (user_id);
             """))
             
     def upsert(self, documents: Sequence[Document]) -> None:

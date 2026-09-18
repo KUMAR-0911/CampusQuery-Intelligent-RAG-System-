@@ -55,32 +55,38 @@ class PostgresMemory:
 
     def _create_tables(self) -> None:
         """Create the memory tables and indexes if they do not already exist."""
-        ddl_statements = [
-            """
-            CREATE TABLE IF NOT EXISTS user_memories (
-                user_id   VARCHAR(255) PRIMARY KEY,
-                facts     TEXT NOT NULL DEFAULT '',
-                summary   TEXT NOT NULL DEFAULT '',
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS conversation_messages (
-                id          BIGSERIAL PRIMARY KEY,
-                user_id     VARCHAR(255) NOT NULL,
-                role        VARCHAR(50)  NOT NULL,
-                content     TEXT         NOT NULL,
-                is_compacted BOOLEAN     NOT NULL DEFAULT FALSE,
-                created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_conv_user_id ON conversation_messages(user_id, id)",
-            "CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversation_messages(user_id, is_compacted)",
-        ]
+        try:
+            with self.engine.connect() as conn:
+                check = conn.execute(text(
+                    "SELECT (to_regclass('public.user_memories') IS NOT NULL) AS has_mem, "
+                    "(to_regclass('public.conversation_messages') IS NOT NULL) AS has_conv"
+                )).mappings().first()
+                if check and check["has_mem"] and check["has_conv"]:
+                    return
+        except Exception:
+            pass
+
+        ddl_batch = """
+        CREATE TABLE IF NOT EXISTS user_memories (
+            user_id   VARCHAR(255) PRIMARY KEY,
+            facts     TEXT NOT NULL DEFAULT '',
+            summary   TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id          BIGSERIAL PRIMARY KEY,
+            user_id     VARCHAR(255) NOT NULL,
+            role        VARCHAR(50)  NOT NULL,
+            content     TEXT         NOT NULL,
+            is_compacted BOOLEAN     NOT NULL DEFAULT FALSE,
+            created_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_conv_user_id ON conversation_messages(user_id, id);
+        CREATE INDEX IF NOT EXISTS idx_conv_compacted ON conversation_messages(user_id, is_compacted);
+        """
 
         with self.engine.begin() as conn:
-            for stmt in ddl_statements:
-                conn.execute(text(stmt.strip()))
+            conn.execute(text(ddl_batch))
 
         print("[postgres] Memory tables verified / created.")
 

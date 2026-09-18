@@ -52,6 +52,7 @@ from RETRIVAL.pipeline import answer_question, ingest_to_pgvector, get_affinda_e
 from RETRIVAL.pgvectorstore import PgVectorStore
 from database import get_db_engine
 
+from profile_requests import profile_endpoint
 import auth
 from models import UserManager, UserRole, UserStatus
 
@@ -123,10 +124,9 @@ def get_resources() -> tuple[PgVectorStore, RetrievalAgent, PostgresMemory, Memo
     )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Initialize resources and eagerly load all cloud components on application startup."""
-    print("[startup] Initializing backend resources and preloading all cloud components...")
+def _warmup_cloud_components():
+    """Warm up remote cloud inference clients and extractors asynchronously in the background."""
+    print("[startup] Preloading cloud components in background...")
     try:
         store, agent, memory, summarizer, user_manager, guardrails = get_resources()
         
@@ -150,10 +150,30 @@ async def lifespan(app: FastAPI):
         get_affinda_extractor()
         get_hybrid_chunker()
 
-        print("[startup] All cloud components (Embedding, Reranker, Guardrails, Memory, Extractor) preloaded successfully! Ready for requests.")
+        print("[startup] All cloud components (Embedding, Reranker, Guardrails, Memory, Extractor) preloaded successfully in background!")
     except Exception as exc:
-        print(f"[startup] Non-critical cloud component init notice: {exc}")
+        print(f"[startup] Non-critical cloud component background init notice: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Fast non-blocking startup: bootstrap essentials instantly and warm up cloud models in background."""
+    print("[startup] Initializing CampusQuery backend...")
+    try:
+        get_user_manager()
+    except Exception as exc:
+        print(f"[startup] Database connection warning: {exc}")
+
+    # Kick off remote cloud preloading asynchronously in background thread so app serves immediately
+    asyncio.create_task(asyncio.to_thread(_warmup_cloud_components))
+    print("[startup] CampusQuery backend is ready to accept requests!")
     yield
+    # Shutdown logic: flush buffered metrics
+    try:
+        um = get_user_manager()
+        um.metrics_buffer.flush_all()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Resume & Career Analyzer Toolkit API", version="1.0.0", lifespan=lifespan)
@@ -331,9 +351,10 @@ async def get_current_admin(user: dict = Depends(get_current_user)) -> dict:
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import formatdate, make_msgid
 
 # Dedicated thread pool for non-blocking OTP email dispatching
-email_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="otp-mailer")
+email_executor = ThreadPoolExecutor(max_workers=DEFAULT_CONFIG.smtp_pool_size, thread_name_prefix="otp-mailer")
 
 def generate_otp() -> str:
     return str(random.randint(100000, 999999))
@@ -343,58 +364,119 @@ class ResendOTPRequest(BaseModel):
     email: EmailStr
 
 
-def send_otp_email(to_email: str, otp: str) -> None:
-    """Send OTP email using SMTP with fast connection timeouts; fallback to printing in console."""
-    username = DEFAULT_CONFIG.smtp_username
-    password = DEFAULT_CONFIG.smtp_password
-    if username and password:
+def send_otp_email(to_email: str, otp: str) -> bool:
+    """Send OTP email with direct SSL (port 465) / STARTTLS (port 587) fallback,
+
+    and strict RFC-5322 compliance (Date, domain Message-ID, From display name, Reply-To)
+    for instant inbox deliverability without falling into spam folders.
+    """
+    raw_username = DEFAULT_CONFIG.smtp_username
+    raw_password = DEFAULT_CONFIG.smtp_password
+    if not (raw_username and raw_password):
+        print(f"--- OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env to enable real email sending) ---")
+        return False
+
+    username = raw_username.strip()
+    password = raw_password.replace(" ", "").strip()
+    from_addr = (DEFAULT_CONFIG.smtp_from_email or username).strip()
+    from_header = f"CampusQuery <{from_addr}>" if "<" not in from_addr else from_addr
+    server_host = (DEFAULT_CONFIG.smtp_server or "smtp.gmail.com").strip()
+    configured_port = int(DEFAULT_CONFIG.smtp_port or 465)
+
+    sender_domain = from_addr.split("@")[-1].rstrip(">").strip() if "@" in from_addr else "gmail.com"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"{otp} is your CampusQuery verification code"
+    msg["From"] = from_header
+    msg["To"] = to_email
+    msg["Reply-To"] = from_addr
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender_domain)
+    msg["X-Priority"] = "1"
+    msg["Importance"] = "high"
+    msg["X-Mailer"] = "CampusQuery-Auth"
+
+    text_content = (
+        f"CampusQuery Verification Code\n\n"
+        f"Your verification OTP code is: {otp}\n\n"
+        f"This code is valid for 10 minutes. If you did not request this, please ignore this email."
+    )
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0f172a; padding: 30px 15px; margin: 0;">
+        <div style="max-width: 500px; margin: 0 auto; background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 32px; color: #f8fafc; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <div style="display: inline-block; background: linear-gradient(135deg, #6366f1, #a855f7); border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 20px; color: #ffffff; letter-spacing: 0.5px;">
+              CampusQuery
+            </div>
+          </div>
+          <h2 style="font-size: 20px; font-weight: 600; text-align: center; margin-top: 0; margin-bottom: 12px; color: #ffffff;">Verification Code</h2>
+          <p style="font-size: 14px; color: #94a3b8; text-align: center; line-height: 1.5; margin-bottom: 28px;">
+            Use the 6-digit verification code below to complete your authentication.
+          </p>
+          <div style="background: #0f172a; border: 1px solid #475569; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 28px;">
+            <span style="font-family: monospace, Courier, monospace; font-size: 34px; font-weight: 700; letter-spacing: 8px; color: #818cf8; text-shadow: 0 0 12px rgba(99, 102, 241, 0.4);">{otp}</span>
+          </div>
+          <p style="font-size: 13px; color: #64748b; text-align: center; margin-bottom: 0;">
+            Code expires in <strong>10 minutes</strong>. If you did not request this code, please safely ignore this email.
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(text_content, "plain", "utf-8"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+    # Determine attempt order: try configured port first, then fallback to the alternative
+    alt_port = 465 if configured_port == 587 else 587
+    ports_to_try = [configured_port, alt_port]
+
+    last_error = None
+    for port in ports_to_try:
         try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"CampusQuery - Your Verification Code: {otp}"
-            msg["From"] = DEFAULT_CONFIG.smtp_from_email or username
-            msg["To"] = to_email
-
-            text_content = f"Your CampusQuery OTP verification code is: {otp}\nValid for 10 minutes."
-            html_content = f"""
-            <html>
-              <body style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-                <h2>CampusQuery Verification Code</h2>
-                <p>Your OTP verification code is:</p>
-                <h1 style="color: #4F46E5; letter-spacing: 4px;">{otp}</h1>
-                <p>Please enter this code in the application to complete your verification.</p>
-              </body>
-            </html>
-            """
-            msg.attach(MIMEText(text_content, "plain"))
-            msg.attach(MIMEText(html_content, "html"))
-
-            port = int(DEFAULT_CONFIG.smtp_port)
-            server_host = DEFAULT_CONFIG.smtp_server
-
             if port == 465:
-                with smtplib.SMTP_SSL(server_host, port, timeout=4.0) as server:
+                with smtplib.SMTP_SSL(server_host, port, timeout=DEFAULT_CONFIG.smtp_timeout) as server:
                     server.login(username, password)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(server_host, port, timeout=4.0) as server:
+                with smtplib.SMTP(server_host, port, timeout=DEFAULT_CONFIG.smtp_timeout) as server:
                     server.ehlo()
                     server.starttls()
                     server.ehlo()
                     server.login(username, password)
                     server.send_message(msg)
-            print(f"[email] OTP email successfully sent to {to_email}")
+            print(f"[email] OTP successfully delivered to {to_email} via port {port}")
+            return True
         except Exception as exc:
-            print(f"[email] Notice sending email to {to_email}: {exc}. Fallback OTP in logs: {otp}")
-    else:
-        print(f"--- OTP for {to_email} is {otp} (Configure SMTP_USERNAME & SMTP_PASSWORD in .env to enable real email sending) ---")
+            last_error = exc
+            print(f"[email] Notice: Port {port} dispatch to {to_email} failed ({exc}). Retrying next method...")
+
+    print(f"[email] Error sending OTP to {to_email}: {last_error}. Fallback OTP in logs: {otp}")
+    return False
+
+
+def _on_email_done(future):
+    try:
+        res = future.result()
+        if not res:
+            print("[email] Background email dispatch completed with warning (returned False).")
+    except Exception as exc:
+        print(f"[email] Background email dispatch thread exception: {exc}")
 
 
 def dispatch_otp_email(to_email: str, otp: str) -> None:
     """Non-blocking background dispatch of OTP emails to eliminate HTTP response latency."""
-    email_executor.submit(send_otp_email, to_email, otp)
+    fut = email_executor.submit(send_otp_email, to_email, otp)
+    fut.add_done_callback(_on_email_done)
 
 
 @app.post("/register")
+@profile_endpoint
 def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     name = (data.name or "").strip() or email.split("@")[0]
@@ -410,7 +492,7 @@ def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserMana
         otp = generate_otp()
         um.otp_store.set_otp(email, otp)
         um.update_password(email, hashed_password)
-        um.update_otp(email, otp)
+        background_tasks.add_task(um.update_otp, email, otp)
         dispatch_otp_email(email, otp)
         return {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
     
@@ -424,6 +506,7 @@ def register(data: UserRegister, background_tasks: BackgroundTasks, um: UserMana
 
 
 @app.post("/resend-otp")
+@profile_endpoint
 def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     user = um.get_user_by_email(email)
@@ -441,6 +524,7 @@ def resend_otp(data: ResendOTPRequest, background_tasks: BackgroundTasks, um: Us
 
 
 @app.post("/verify-otp")
+@profile_endpoint
 def verify_otp(data: OTPVerify, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     input_otp = str(data.otp).strip()
@@ -513,6 +597,7 @@ def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), 
 
 
 @app.post("/forgot-password")
+@profile_endpoint
 def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     user = um.get_user_by_email(email)
@@ -527,6 +612,7 @@ def forgot_password(data: ForgotPassword, background_tasks: BackgroundTasks, um:
 
 
 @app.post("/reset-password")
+@profile_endpoint
 def reset_password(data: ResetPassword, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     input_otp = str(data.otp).strip()

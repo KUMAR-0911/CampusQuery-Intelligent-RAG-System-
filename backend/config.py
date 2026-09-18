@@ -156,10 +156,13 @@ class RetrievalConfig:
     )
     # ── SMTP Email Configuration ──
     smtp_server: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_port: int = int(os.getenv("SMTP_PORT", "465"))
     smtp_username: str | None = os.getenv("SMTP_USERNAME")
     smtp_password: str | None = os.getenv("SMTP_PASSWORD")
     smtp_from_email: str | None = os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USERNAME"))
+    # Connection pooling for SMTP (optional, not all libraries support it)
+    smtp_pool_size: int = int(os.getenv("SMTP_POOL_SIZE", "5"))
+    smtp_timeout: float = float(os.getenv("SMTP_TIMEOUT", "12.0"))
     
     # ── Authentication (JWT) & Security ──
 
