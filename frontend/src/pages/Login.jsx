@@ -17,11 +17,12 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError('');
     setLoading(true);
     try {
       const formData = new FormData();
-      formData.append('username', email);
+      formData.append('username', email.trim());
       formData.append('password', password);
 
       const res = await api.post('/login', formData);
@@ -29,9 +30,14 @@ export default function Login() {
         setTokens(res.data);
       }
       
-      const userRes = await api.get('/me');
+      // Use user payload directly from /login response to avoid redundant network round-trip
+      let userData = res.data?.user;
+      if (!userData) {
+        const userRes = await api.get('/me');
+        userData = userRes.data;
+      }
 
-      login(userRes.data);
+      login(userData);
       toast.success('Welcome back!');
       navigate('/');
     } catch (err) {

@@ -1,5 +1,4 @@
-"""Authentication and security utilities."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
@@ -22,13 +21,17 @@ pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password:
+        return False
     try:
-        return ph.verify(hashed_password, plain_password)
-    except (VerifyMismatchError, InvalidHashError):
-        try:
-            return pwd_context.verify(plain_password, hashed_password)
-        except Exception:
-            return False
+        if hashed_password.startswith("$argon2"):
+            try:
+                return ph.verify(hashed_password, plain_password)
+            except VerifyMismatchError:
+                return False
+            except InvalidHashError:
+                pass
+        return pwd_context.verify(plain_password, hashed_password)
     except Exception:
         return False
 
@@ -38,25 +41,17 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire, "type": "access"})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode = {**data, "exp": expire, "type": "access"}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def create_refresh_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta if expires_delta else timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    to_encode = {**data, "exp": expire, "type": "refresh"}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def decode_access_token(token: str, expected_type: str = "access") -> dict[str, Any] | None:
