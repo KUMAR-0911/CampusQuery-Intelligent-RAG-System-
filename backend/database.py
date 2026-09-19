@@ -16,8 +16,8 @@ def get_db_engine() -> Engine:
         url = url.replace("postgres://", "postgresql://", 1)
         
     connect_args = {
-        # Faster failure on network issues (was 10s)
-        "connect_timeout": 8,
+        # Increased timeout to 30s for slower cloud DBs like Aiven
+        "connect_timeout": 30,
         "application_name": "campusquery",
         # TCP keepalives to detect stale connections early
         "keepalives": 1,
