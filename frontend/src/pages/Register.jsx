@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, Zap, User, Globe, Eye, EyeOff } from 'lucide-react';
-import api, { getErrorMessage } from '../api/api';
+import api, { getErrorMessage, setTokens } from '../api/api';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
 export default function Register() {
@@ -17,6 +18,7 @@ export default function Register() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { login } = useAuth();
   const toast = useToast();
 
   const getPasswordStrength = (pw) => {
@@ -56,8 +58,20 @@ export default function Register() {
         email,
         password
       });
-      toast.success('Account created! Please verify your email.');
-      navigate('/verify-otp', { state: { email } });
+
+      if (res.data?.access_token) {
+        setTokens(res.data);
+      }
+      
+      let userData = res.data?.user;
+      if (userData) {
+        login(userData);
+        toast.success('Account created successfully! Welcome!');
+        navigate('/');
+      } else {
+        toast.success('Account created successfully! Please sign in.');
+        navigate('/login', { state: { email } });
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {

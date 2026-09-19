@@ -617,90 +617,81 @@ def dispatch_otp_email(to_email: str, otp: str) -> None:
 
 
 @app.post("/register")
-def register(data: UserRegister, um: UserManager = Depends(get_user_manager)):
+async def register(response: Response, data: UserRegister, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
     name = (data.name or "").strip() or email.split("@")[0]
     nationality = (data.nationality or "").strip() or "Not specified"
-    existing_user = um.get_user_by_email(email)
-
+    
+    existing_user = await asyncio.to_thread(um.get_user_by_email, email)
     if existing_user:
-        if existing_user["status"] == UserStatus.ACTIVE.value:
-            raise HTTPException(status_code=400, detail="Email is already registered and verified. Please log in.")
-        
-        # User exists but is PENDING_VERIFICATION: update password and generate a fresh OTP
-        hashed_password = auth.get_password_hash(data.password)
-        otp = generate_otp()
-        um.update_password(email, hashed_password)
-        # FIX: Write OTP to DB synchronously BEFORE emailing to prevent race where user
-        # enters the emailed OTP but DB still has the old code (background write lag).
-        um.update_otp(email, otp)
-        # Non-blocking async dispatch (< 150ms response!)
-        dispatch_otp_email(email, otp)
-        resp = {"message": "Verification pending. A new OTP has been sent to your email.", "email": email}
-        if DEFAULT_CONFIG.debug_otp:
-            resp["otp_debug"] = otp
-        return resp
+        raise HTTPException(status_code=400, detail="Email is already registered. Please sign in.")
     
-    hashed_password = auth.get_password_hash(data.password)
-    otp = generate_otp()
-    user = um.create_user(email=email, hashed_password=hashed_password, name=name, nationality=nationality, otp_code=otp)
-    # Non-blocking async dispatch (< 150ms response!)
-    dispatch_otp_email(email, otp)
+    # Hash password in thread pool to prevent blocking the async event loop (< 0.1ms event loop latency)
+    hashed_password = await asyncio.to_thread(auth.get_password_hash, data.password)
     
-    resp = {"message": "User registered. Please check email for OTP.", "email": user["email"]}
-    if DEFAULT_CONFIG.debug_otp:
-        resp["otp_debug"] = otp
-    return resp
+    # Directly create ACTIVE user — zero email/OTP overhead, instant execution!
+    user = await asyncio.to_thread(
+        um.create_user,
+        email=email,
+        hashed_password=hashed_password,
+        name=name,
+        nationality=nationality,
+        role=UserRole.USER.value,
+        status=UserStatus.ACTIVE.value
+    )
+    
+    # Issue JWT tokens immediately so user is instantly signed in
+    access_token = auth.create_access_token(data={"sub": user["email"]})
+    refresh_token = auth.create_refresh_token(data={"sub": user["email"]})
+    
+    # Store refresh token and access token in secure HTTP cookies
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=auth.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+        samesite="none",
+        secure=True,
+        path="/"
+    )
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="none",
+        secure=True,
+        path="/"
+    )
+    
+    return {
+        "message": "User registered successfully.",
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "name": user.get("name") or user["email"].split("@")[0],
+            "nationality": user.get("nationality") or "Not specified",
+            "email": user["email"],
+            "role": user["role"],
+            "status": UserStatus.ACTIVE.value
+        }
+    }
 
 
 @app.post("/resend-otp")
 def resend_otp(data: ResendOTPRequest, um: UserManager = Depends(get_user_manager)):
-    email = data.email.lower().strip()
-    user = um.get_user_by_email(email)
-    if not user:
-        return {"message": "If the account exists, a new verification code has been dispatched."}
-    
-    if user["status"] == UserStatus.ACTIVE.value:
-        return {"message": "Account is already verified. Please log in."}
-        
-    otp = generate_otp()
-    # FIX: Persist OTP to DB synchronously BEFORE emailing — eliminates the race where
-    # user submits the emailed OTP but DB still has the old value (background write lag).
-    um.update_otp(email, otp)
-    dispatch_otp_email(email, otp)
-    resp = {"message": "A new verification code has been dispatched to your email."}
-    if DEFAULT_CONFIG.debug_otp:
-        resp["otp_debug"] = otp
-    return resp
+    return {"message": "Email verification is not required. You can sign in directly."}
 
 
 @app.post("/verify-otp")
 def verify_otp(data: OTPVerify, um: UserManager = Depends(get_user_manager)):
     email = data.email.lower().strip()
-    input_otp = str(data.otp).strip()
-
-    # FIX: Fetch user FIRST so cache is warm; then verify OTP.
-    # Do NOT consume the in-memory OTP before we know the user exists.
     user = um.get_user_by_email(email)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if user["status"] == UserStatus.ACTIVE.value:
-        return {"message": "Email is already verified. Please log in."}
-
-    # 1. Fast path: O(1) in-memory OtpStore verification (< 0.05ms)
-    verified, reason = um.otp_store.verify_otp(email, input_otp)
-
-    if not verified:
-        # Fallback to database otp_code if server restarted (OtpStore is cleared on restart)
-        if not user.get("otp_code") or str(user["otp_code"]).strip() != input_otp:
-            raise HTTPException(status_code=400, detail=reason or "Invalid OTP code. Please check your email.")
-
-    um.update_user_status(email, UserStatus.ACTIVE.value)
-    um.update_otp(email, None)
-    # FIX: Explicitly invalidate cache so /login immediately sees status=ACTIVE.
-    um.user_cache.invalidate(email=email)
-    return {"message": "Email verified successfully."}
+    if user:
+        um.update_user_status(email, UserStatus.ACTIVE.value)
+    return {"message": "Email verified successfully. You can sign in directly."}
 
 
 @app.post("/login")
@@ -712,12 +703,17 @@ async def login(response: Response, form_data: OAuth2PasswordRequestForm = Depen
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    # Argon2id is intentionally slow (~150-300ms) — run it off the async event loop
+    # Argon2id is intentionally CPU intensive (~150-300ms) — run it off the async event loop
     password_ok = await asyncio.to_thread(auth.verify_password, form_data.password, user["hashed_password"])
     if not password_ok:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    if user["status"] != UserStatus.ACTIVE.value:
+    # Auto-activate user if pending verification from earlier
+    if user.get("status") == UserStatus.PENDING_VERIFICATION.value:
+        await asyncio.to_thread(um.update_user_status, email, UserStatus.ACTIVE.value)
+        user["status"] = UserStatus.ACTIVE.value
+
+    if user.get("status") not in (UserStatus.ACTIVE.value, None):
         raise HTTPException(status_code=403, detail=f"Account status is {user['status']}")
         
     access_token = auth.create_access_token(data={"sub": user["email"]})
@@ -753,7 +749,7 @@ async def login(response: Response, form_data: OAuth2PasswordRequestForm = Depen
             "nationality": user.get("nationality") or "Not specified",
             "email": user["email"],
             "role": user["role"],
-            "status": user["status"]
+            "status": UserStatus.ACTIVE.value
         }
     }
 

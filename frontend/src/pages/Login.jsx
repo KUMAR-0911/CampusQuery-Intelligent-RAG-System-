@@ -44,11 +44,6 @@ export default function Login() {
     } catch (err) {
       const detail = err.response?.data?.detail || '';
       if (err.response?.status === 403) {
-        if (detail.includes('PENDING_VERIFICATION')) {
-          toast.info('Please verify your email first.');
-          navigate('/verify-otp', { state: { email } });
-          return;
-        }
         if (detail.includes('LOCKED')) {
           setError('Your account has been temporarily locked due to too many failed attempts. Please contact support or try again later.');
           return;

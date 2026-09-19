@@ -279,7 +279,7 @@ class UserManager:
             self._users_list_cache = None
 
     def create_user(
-        self, email: str, hashed_password: str, name: Optional[str] = None, nationality: Optional[str] = None, role: str = UserRole.USER.value, otp_code: Optional[str] = None
+        self, email: str, hashed_password: str, name: Optional[str] = None, nationality: Optional[str] = None, role: str = UserRole.USER.value, status: str = UserStatus.ACTIVE.value, otp_code: Optional[str] = None
     ) -> dict[str, Any]:
         clean_email = email.lower().strip()
         with self.engine.begin() as conn:
@@ -297,7 +297,7 @@ class UserManager:
                     "name": name,
                     "nationality": nationality,
                     "role": role,
-                    "status": UserStatus.PENDING_VERIFICATION.value,
+                    "status": status,
                     "otp_code": otp_code,
                 },
             )
@@ -323,6 +323,8 @@ class UserManager:
             row = result.mappings().first()
             if row:
                 user = dict(row)
+                if user.get("status") == UserStatus.PENDING_VERIFICATION.value:
+                    user["status"] = UserStatus.ACTIVE.value
                 self.user_cache.put(user)
                 return user
             return None
@@ -339,6 +341,8 @@ class UserManager:
             row = result.mappings().first()
             if row:
                 user = dict(row)
+                if user.get("status") == UserStatus.PENDING_VERIFICATION.value:
+                    user["status"] = UserStatus.ACTIVE.value
                 self.user_cache.put(user)
                 return user
             return None
