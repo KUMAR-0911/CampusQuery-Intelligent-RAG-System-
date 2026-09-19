@@ -19,4 +19,4 @@ ENV MALLOC_ARENA_MAX=2
 # Run FastAPI with 2 Uvicorn workers for better request concurrency.
 # 2 workers on 512MB Render Free Tier: ~30MB extra RAM, 2x throughput.
 # Requests no longer queue behind slow LLM calls when multiple users are active.
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --loop uvloop --timeout-keep-alive 65"
+CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --timeout-keep-alive 65"
