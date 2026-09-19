@@ -429,6 +429,8 @@ def _send_via_resend(to_email: str, otp: str) -> bool:
             return True
         else:
             print(f"[email:RESEND:WARN] Resend API returned status {resp.status_code}: {resp.text}")
+            if "testing emails to your own email address" in resp.text:
+                print(f"[email:RESEND:NOTICE] Resend unverified domain (onboarding@resend.dev) can only send to account owner. Verify a custom domain at resend.com/domains or use Brevo API / Google Apps Script webhook to deliver to arbitrary users.")
             return False
     except Exception as exc:
         print(f"[email:RESEND:ERROR] Resend API exception: {exc}")
@@ -440,9 +442,13 @@ def _send_via_brevo(to_email: str, otp: str) -> bool:
     api_key = (DEFAULT_CONFIG.brevo_api_key or "").strip()
     if not api_key:
         return False
+    if api_key.startswith("xsmtpsib-"):
+        print("[email:BREVO:ERROR] Configured BREVO_API_KEY starts with 'xsmtpsib-'. This is an SMTP key, NOT a REST API key!")
+        print("[email:BREVO:HELP] To fix: Go to Brevo -> SMTP & API -> API Keys (tab) -> Generate a new API key (starts with 'xkeysib-').")
+        return False
     try:
         t0 = time.perf_counter()
-        from_email = (DEFAULT_CONFIG.smtp_from_email or "noreply@campusquery.com").strip()
+        from_email = (DEFAULT_CONFIG.smtp_from_email or DEFAULT_CONFIG.smtp_username or "kumaryalla123@gmail.com").strip()
         resp = requests.post(
             "https://api.brevo.com/v3/smtp/email",
             headers={
@@ -574,8 +580,9 @@ def send_otp_email(to_email: str, otp: str) -> bool:
             return True
 
     # 4. Direct SMTP (Ports 465 / 587 - works locally and on paid VPS, blocked on Render Free Tier)
-    if os.getenv("RENDER"):
-        print(f"[email:NOTICE] Running on Render Free Tier: Skipping blocked SMTP ports (465/587) for {to_email} to avoid 8s timeout.")
+    force_smtp = os.getenv("FORCE_SMTP", "false").lower() == "true"
+    if os.getenv("RENDER") and not force_smtp:
+        print(f"[email:NOTICE] Running on Render Free Tier: Skipping blocked SMTP ports (465/587) for {to_email}. (Set FORCE_SMTP=true if your plan allows outbound SMTP)")
     elif DEFAULT_CONFIG.smtp_username and DEFAULT_CONFIG.smtp_password:
         if _send_via_smtp(to_email, otp):
             return True
