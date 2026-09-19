@@ -522,32 +522,74 @@ def _send_via_smtp(to_email: str, otp: str) -> bool:
     return False
 
 
+def _send_via_gmail_http(to_email: str, otp: str) -> bool:
+    """Send OTP email via Google Apps Script HTTPS Webhook (Port 443 - works everywhere on Render)."""
+    webhook_url = os.getenv("GMAIL_HTTP_URL", "").strip()
+    if not webhook_url:
+        return False
+    try:
+        t0 = time.perf_counter()
+        resp = requests.post(
+            webhook_url,
+            json={
+                "to": to_email,
+                "subject": "Verify your CampusQuery account",
+                "body": (
+                    f"Hi,\n\n"
+                    f"Your verification code for CampusQuery is:\n\n"
+                    f"    {otp}\n\n"
+                    f"This code expires in 10 minutes.\n\n"
+                    f"- CampusQuery Team"
+                ),
+                "otp": otp,
+            },
+            timeout=6.0,
+        )
+        elapsed = (time.perf_counter() - t0) * 1000
+        if resp.status_code in (200, 201):
+            print(f"[email:GMAIL_HTTP:OK] OTP delivered to {to_email} via HTTPS Webhook in {elapsed:.0f}ms")
+            return True
+        else:
+            print(f"[email:GMAIL_HTTP:WARN] Webhook returned {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        print(f"[email:GMAIL_HTTP:ERROR] Webhook exception: {exc}")
+    return False
+
+
 def send_otp_email(to_email: str, otp: str) -> bool:
-    """Send OTP email using HTTP API (Resend / Brevo) first, falling back to SMTP."""
-    # 1. Try Resend HTTP API (Port 443 - works everywhere, immune to Render SMTP block)
+    """Send OTP email using HTTP API (Resend / Brevo / Webhook) first, falling back to SMTP."""
+    # 1. Try Custom HTTPS Webhook / Google Apps Script (Port 443 - never blocked on Render)
+    if os.getenv("GMAIL_HTTP_URL"):
+        if _send_via_gmail_http(to_email, otp):
+            return True
+
+    # 2. Try Resend HTTP API (Port 443 - works everywhere, immune to Render SMTP block)
     if DEFAULT_CONFIG.resend_api_key:
         if _send_via_resend(to_email, otp):
             return True
 
-    # 2. Try Brevo HTTP API (Port 443)
+    # 3. Try Brevo HTTP API (Port 443)
     if DEFAULT_CONFIG.brevo_api_key:
         if _send_via_brevo(to_email, otp):
             return True
 
-    # 3. Direct SMTP (Ports 465 / 587 - works locally and on paid VPS, blocked on Render Free Tier)
+    # 4. Direct SMTP (Ports 465 / 587 - works locally and on paid VPS, blocked on Render Free Tier)
     if os.getenv("RENDER"):
         print(f"[email:NOTICE] Running on Render Free Tier: Skipping blocked SMTP ports (465/587) for {to_email} to avoid 8s timeout.")
     elif DEFAULT_CONFIG.smtp_username and DEFAULT_CONFIG.smtp_password:
         if _send_via_smtp(to_email, otp):
             return True
 
-    # 4. Fallback logging
-    print(f"[email:FAIL] Could not deliver OTP email to {to_email}. OTP is: {otp}")
+    # 5. Fallback logging
+    print(f"\n{'='*60}")
+    print(f"[RENDER OTP] Verification code for {to_email}: {otp}")
+    print(f"{'='*60}\n")
     if os.getenv("RENDER"):
         print("[email:NOTICE] On Render Free Tier: SMTP ports 25, 465, and 587 are blocked at the network firewall level.")
         print("[email:NOTICE] For real users (external email addresses):")
+        print("  - Brevo: Generate a free REST API Key (starts with 'xkeysib-') under Brevo -> SMTP & API -> API Keys.")
         print("  - Resend: 'onboarding@resend.dev' only sends to account owner (kumaryalla123@gmail.com). Verify your domain at resend.com/domains to send to any recipient.")
-        print("  - Brevo: Generate a free REST API Key (starts with 'xkeysib-') under Brevo -> SMTP & API -> API Keys (the SMTP key 'xsmtpsib-' is not accepted by the REST API).")
+        print("  - Webhook: Or set GMAIL_HTTP_URL to a free Google Apps Script web app.")
     return False
 
 

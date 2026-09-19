@@ -52,6 +52,8 @@ services:
         sync: false
       - key: DEBUG_OTP
         sync: false
+      - key: GMAIL_HTTP_URL
+        sync: false
       # You can add more keys here if needed, or add them in the dashboard later
 
   # -----------------------------------------
