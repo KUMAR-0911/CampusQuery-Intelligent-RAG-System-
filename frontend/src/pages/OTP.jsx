@@ -15,7 +15,6 @@ export default function OTP() {
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(30);
-  const [debugCode, setDebugCode] = useState(location.state?.otp_debug || '');
   const inputRefs = useRef([]);
 
   useEffect(() => {
@@ -39,11 +38,8 @@ export default function OTP() {
     setResending(true);
     setError('');
     try {
-      const res = await api.post('/resend-otp', { email });
+      await api.post('/resend-otp', { email });
       toast.success('A new OTP code has been dispatched to your email.');
-      if (res.data?.otp_debug) {
-        setDebugCode(res.data.otp_debug);
-      }
       setResendCooldown(30);
     } catch (err) {
       setError(getErrorMessage(err));
@@ -156,43 +152,6 @@ export default function OTP() {
           <p style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: '0.35rem' }}>
             Check your <strong>Spam / Junk</strong> folder if you don't see it in your inbox.
           </p>
-          {debugCode && (
-            <div style={{
-              margin: '0.75rem auto 0',
-              maxWidth: '320px',
-              padding: '0.5rem 0.75rem',
-              borderRadius: '8px',
-              backgroundColor: 'rgba(99, 102, 241, 0.12)',
-              border: '1px solid rgba(99, 102, 241, 0.3)',
-              fontSize: '0.82rem',
-              color: '#818cf8',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '0.5rem'
-            }}>
-              <span>Test Code: <strong>{debugCode}</strong></span>
-              <button
-                type="button"
-                onClick={() => {
-                  const digits = debugCode.split('').slice(0, 6);
-                  setOtp(digits);
-                  triggerVerify(debugCode);
-                }}
-                style={{
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  border: '1px solid #818cf8',
-                  background: 'rgba(99, 102, 241, 0.2)',
-                  color: '#818cf8',
-                  fontSize: '0.75rem',
-                  cursor: 'pointer'
-                }}
-              >
-                Auto-fill
-              </button>
-            </div>
-          )}
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}

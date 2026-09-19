@@ -16,21 +16,31 @@ def get_db_engine() -> Engine:
         url = url.replace("postgres://", "postgresql://", 1)
         
     connect_args = {
-        "connect_timeout": 10,
+        # Faster failure on network issues (was 10s)
+        "connect_timeout": 8,
         "application_name": "campusquery",
+        # TCP keepalives to detect stale connections early
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        # Kill runaway queries after 25s (prevents blocking the pool forever)
+        "options": "-c statement_timeout=25000",
     }
     engine = create_engine(
         url,
         connect_args=connect_args,
         pool_pre_ping=True,
-        pool_recycle=300,
-        pool_size=10,
-        max_overflow=20,
-        pool_timeout=15,
+        # Recycle connections every 30 min instead of 5 min — avoids thrashing
+        # healthy connections on Render's managed PostgreSQL
+        pool_recycle=1800,
+        # 5 idle connections is sufficient for Render Free Tier (512MB RAM).
+        # 10 idle connections waste ~50MB in overhead with no concurrency benefit.
+        pool_size=5,
+        # Allow short bursts to 15 total connections under load
+        max_overflow=10,
+        # Fail faster if pool is exhausted — avoids request pileup
+        pool_timeout=10,
     )
     return engine
 

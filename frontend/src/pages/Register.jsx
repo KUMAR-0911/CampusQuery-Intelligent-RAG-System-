@@ -57,7 +57,7 @@ export default function Register() {
         password
       });
       toast.success('Account created! Please verify your email.');
-      navigate('/verify-otp', { state: { email, otp_debug: res.data?.otp_debug } });
+      navigate('/verify-otp', { state: { email } });
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {

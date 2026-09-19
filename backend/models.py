@@ -27,7 +27,7 @@ class UserCache:
     Provides O(1) lookups by email and id to eliminate repetitive database round-trips
     and avoid 401s caused by intermittent database latency spikes.
     """
-    def __init__(self, maxsize: int = 2048, ttl_seconds: float = 300.0):
+    def __init__(self, maxsize: int = 2048, ttl_seconds: float = 600.0):
         self.maxsize = maxsize
         self.ttl = ttl_seconds
         self._email_cache: collections.OrderedDict[str, tuple[float, dict[str, Any]]] = collections.OrderedDict()
@@ -220,7 +220,7 @@ class MetricsBuffer:
 class UserManager:
     def __init__(self, engine: Engine):
         self.engine = engine
-        self.user_cache = UserCache(maxsize=2048, ttl_seconds=300.0)
+        self.user_cache = UserCache(maxsize=2048, ttl_seconds=600.0)
         self.otp_store = OtpStore(ttl_seconds=600.0, max_attempts=5)
         self.metrics_buffer = MetricsBuffer(engine, maxlen=10000, batch_size=50, flush_interval=2.0)
         self._users_list_cache: tuple[float, list[dict[str, Any]]] | None = None
