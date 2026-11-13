@@ -1,20 +1,53 @@
-"""Structure-aware text chunking with token/character limits for retrieval."""
+"""
+chunking.py — Split cleaned documents into smaller pieces for embedding.
+
+WHY CHUNK?
+----------
+LLMs and embedding models have limited context windows.  Splitting a
+20-page PDF into ~500-token chunks lets us embed and retrieve only the
+most relevant *part* of a document, instead of feeding the whole thing
+to the model.
+
+HOW IT WORKS
+------------
+We use LangChain's RecursiveCharacterTextSplitter, which tries to break
+text at natural boundaries (double newlines → single newlines → sentences
+→ words) before falling back to a hard character limit.
+
+The `chunk_size` in RetrievalConfig is in *tokens*.  We approximate
+4 characters per token, so a 500-token chunk ≈ 2 000 characters.
+"""
 
 from __future__ import annotations
 
-from typing import Any
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from config import RetrievalConfig
-from RETRIVAL.cleaning import clean_text
 
 
 def build_text_splitter(config: RetrievalConfig) -> RecursiveCharacterTextSplitter:
-    """Build a recursive character text splitter scaled to embedding token chunk sizes."""
+    """Create a text splitter configured with the project's chunk settings.
+
+    Args:
+        config: The application configuration object.
+
+    Returns:
+        A ready-to-use RecursiveCharacterTextSplitter.
+    """
+    # Approximate: 1 token ≈ 4 characters.
+    char_chunk_size = config.chunk_size * 4
+    char_overlap    = config.chunk_overlap * 4
+
+    print(
+        f"[chunking] Chunk size = {config.chunk_size} tokens "
+        f"(≈{char_chunk_size} chars), "
+        f"overlap = {config.chunk_overlap} tokens."
+    )
+
     return RecursiveCharacterTextSplitter(
-        chunk_size=config.chunk_size * 4,
-        chunk_overlap=config.chunk_overlap * 4,
+        chunk_size=char_chunk_size,
+        chunk_overlap=char_overlap,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
 
@@ -24,14 +57,30 @@ def chunk_text_documents(
     config: RetrievalConfig,
     splitter: RecursiveCharacterTextSplitter | None = None,
 ) -> list[Document]:
-    """Split documents into cleanly contextualized chunk pieces."""
-    splitter = splitter or build_text_splitter(config)
-    result: list[Document] = []
+    """Split a list of documents into smaller chunks.
+
+    Each output chunk carries all of the original document's metadata
+    plus a `split_index` field showing its position within the source.
+
+    Args:
+        documents: Cleaned documents to split.
+        config:    Application configuration (used to build a default splitter).
+        splitter:  Optional pre-built splitter (avoids re-creating one).
+
+    Returns:
+        A flat list of Document chunks.
+    """
+    text_splitter = splitter or build_text_splitter(config)
+    chunks: list[Document] = []
+
     for doc in documents:
-        cleaned_content = clean_text(doc.page_content)
-        pieces = splitter.split_text(cleaned_content)
-        for piece_idx, piece in enumerate(pieces):
-            meta = dict(doc.metadata)
-            meta["split_index"] = piece_idx
-            result.append(Document(page_content=piece, metadata=meta))
-    return result
+        pieces = text_splitter.split_text(doc.page_content)
+        filename = doc.metadata.get("source_file", "document")
+        print(f"[chunking] '{filename}' → {len(pieces)} chunk(s).")
+
+        for index, piece in enumerate(pieces):
+            metadata = {**doc.metadata, "split_index": index}
+            chunks.append(Document(page_content=piece, metadata=metadata))
+
+    print(f"[chunking] Total chunks created: {len(chunks)}.")
+    return chunks

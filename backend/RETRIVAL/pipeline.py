@@ -1,177 +1,221 @@
-"""High-level ingestion pipeline: Affinda Resume Parser → text → clean → hybrid chunk → enrich → embed → pgvector."""
+"""
+pipeline.py — The main orchestration module that ties everything together.
+
+DATA FLOW (document ingestion)
+──────────────────────────────
+  File on disk
+       │
+       ▼
+  DoclingDocumentLoader  →  raw text (Markdown)
+       │
+       ▼
+  clean_documents()      →  normalised text
+       │
+       ▼
+  chunk_text_documents() →  small text chunks (as Document objects)
+       │
+       ▼
+  enrich_metadata()      →  chunks with IDs, headings, word counts
+       │
+       ▼
+  QdrantVectorStore.upsert()  →  embedded and stored in Qdrant Cloud
+
+DATA FLOW (question answering)
+──────────────────────────────
+  User question
+       │
+       ▼
+  QdrantVectorStore.search()  →  top-K similar chunks
+       │
+       ▼
+  RetrievalAgent.answer()     →  Groq LLM generates a grounded answer
+
+SINGLETON PATTERN
+-----------------
+Heavy objects (the Docling loader, the text splitter, the Qdrant store)
+are created once via `@lru_cache` and reused across requests.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Iterable
 from functools import lru_cache
+from pathlib import Path
+from typing import Any, Iterable
 
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from config import DEFAULT_CONFIG, RetrievalConfig
-from RETRIVAL.affinda_extractor import AffindaResumeParser
 from RETRIVAL.chunking import build_text_splitter, chunk_text_documents
 from RETRIVAL.cleaning import clean_documents
-from RETRIVAL.embedding import SentenceTransformerEmbedder
-from RETRIVAL.enrich_metadata import enrich_metadata
-from RETRIVAL.pgvectorstore import PgVectorStore, make_vector_records
+from RETRIVAL.document_loading import DoclingDocumentLoader
+from RETRIVAL.enrich_metadata import enrich_metadata, extract_date_metadata
+from RETRIVAL.qdrantstore import QdrantVectorStore
 from retrieval_agent import RetrievalAgent
 
+# Type alias for functions that accept one path or many.
+DocumentPaths = str | Path | Iterable[str | Path]
 
-@lru_cache(maxsize=1)
-def get_affinda_extractor(config: RetrievalConfig = DEFAULT_CONFIG) -> AffindaResumeParser:
-    """Return singleton AffindaResumeParser."""
-    print("[startup] Initializing Affinda Resume Parser...")
-    parser = AffindaResumeParser(config)
-    has_key = bool(parser.api_key and parser.api_key.strip())
-    print(f"[startup] Affinda Resume Parser ready (API Key {'configured' if has_key else 'NOT set, will use local fallback'}).")
-    return parser
+
+# ═══════════════════════════════════════════════════════════════
+#  Singletons — created once, reused for every request
+# ═══════════════════════════════════════════════════════════════
 
 
 @lru_cache(maxsize=1)
-def get_hybrid_chunker(config: RetrievalConfig = DEFAULT_CONFIG):
-    """Return singleton hybrid text splitter."""
-    print("[startup] Pre-loading Hybrid Text Splitter...")
-    splitter = build_text_splitter(config)
-    print("[startup] Hybrid Text Splitter ready!")
-    return splitter
+def get_docling_extractor() -> DoclingDocumentLoader:
+    """Return the shared Docling document loader (created once)."""
+    print("[pipeline] Loading the Docling document extractor …")
+    return DoclingDocumentLoader()
 
 
 @lru_cache(maxsize=1)
-def get_vector_store(config: RetrievalConfig = DEFAULT_CONFIG) -> PgVectorStore:
-    """Return singleton PgVectorStore with HF Inference API embedder and reranker."""
-    print(f"[startup] Initializing PgVectorStore (reranker: {config.reranker_model} via HF API)...")
-    return PgVectorStore(config)
+def get_hybrid_chunker(
+    config: RetrievalConfig = DEFAULT_CONFIG,
+) -> RecursiveCharacterTextSplitter:
+    """Return the shared text splitter (created once)."""
+    print("[pipeline] Loading the text chunker …")
+    return build_text_splitter(config)
+
+
+@lru_cache(maxsize=1)
+def get_vector_store(
+    config: RetrievalConfig = DEFAULT_CONFIG,
+) -> QdrantVectorStore:
+    """Return the shared Qdrant Cloud vector store (created once)."""
+    print("[pipeline] Connecting to Qdrant Cloud …")
+    return QdrantVectorStore(config)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Document ingestion
+# ═══════════════════════════════════════════════════════════════
 
 
 def _prepare_documents(
-    paths: str | Path | Iterable[str | Path], config: RetrievalConfig, user_id: str | None = None
+    paths: DocumentPaths,
+    config: RetrievalConfig,
 ) -> list[Document]:
-    """Full ingestion flow per file:
-      1. Affinda Resume Parser API → JSON → flat structured text
-      2. Clean the text
-      3. Hybrid chunk into Document objects
-      4. Enrich metadata (heading, source, chunk_id, etc.)
+    """Run the full extraction → cleaning → chunking → enrichment pipeline.
+
+    Args:
+        paths:  One file path, or a list / iterable of file paths.
+        config: Application configuration.
+
+    Returns:
+        A list of enriched Document chunks, ready for embedding.
     """
+    # Normalise input: always work with a list of paths.
     sources = [paths] if isinstance(paths, (str, Path)) else list(paths)
-    parser = get_affinda_extractor(config)
+    if not sources:
+        raise ValueError("You must provide at least one document path.")
+
+    print(f"[pipeline] Starting ingestion for {len(sources)} file(s) …")
+
+    loader   = get_docling_extractor()
     splitter = get_hybrid_chunker(config)
     all_chunks: list[Document] = []
 
-    print(f"[pipeline] Starting document ingestion for {len(sources)} file(s).")
-
     for source in sources:
-        source_path = str(Path(source))
-        source_name = Path(source).name
-        print(f"\n[pipeline] ===== Processing: {source_name} =====")
+        source_path = Path(source)
+        print(f"[pipeline] Processing '{source_path.name}' …")
 
-        # Step 1: Affinda API → JSON → text (or local fallback → text)
-        try:
-            raw_text = parser.extract_text(source_path)
-        except Exception as exc:
-            print(f"[pipeline] Extraction failed for {source_name}: {exc}")
-            continue
+        # Step 1 — Extract text with Docling.
+        raw_text = loader.extract_text(source_path)
 
-        if not raw_text or not raw_text.strip():
-            print(f"[pipeline] Warning: No text extracted from {source_name}. Skipping.")
-            continue
-
-        print(f"[pipeline] Extracted {len(raw_text)} chars of text from '{source_name}'.")
-
-        # Step 2: Wrap as a single Document for cleaning + chunking
-        full_doc = Document(
+        # Step 2 — Wrap as a Document for the rest of the pipeline.
+        doc = Document(
             page_content=raw_text,
             metadata={
-                "source": source_path,
-                "source_file": source_name,
+                "source":      str(source_path),
+                "source_file": source_path.name,
+                **extract_date_metadata(raw_text, source_path),
             },
         )
 
-        # Step 3: Clean the text
-        cleaned_docs = clean_documents([full_doc])
-        if not cleaned_docs:
-            print(f"[pipeline] Warning: Cleaning produced empty result for {source_name}. Skipping.")
-            continue
+        # Step 3 — Clean whitespace, dividers, etc.
+        cleaned = clean_documents([doc])
 
-        # Step 4: Hybrid chunk
-        chunks = chunk_text_documents(cleaned_docs, config, splitter=splitter)
-        print(f"[pipeline] Chunked '{source_name}' into {len(chunks)} chunk(s).")
-
-        # Debug: print each chunk
-        for i, chunk in enumerate(chunks):
-            preview = chunk.page_content[:120].replace("\n", " ")
-            print(f"[pipeline]   Chunk {i}: {len(chunk.page_content)} chars | Preview: {preview}...")
-
+        # Step 4 — Split into small chunks.
+        chunks = chunk_text_documents(cleaned, config, splitter=splitter)
         all_chunks.extend(chunks)
 
-    # Step 5: Tag with user_id
-    if user_id:
-        all_chunks = [
-            Document(
-                page_content=c.page_content,
-                metadata={**c.metadata, "user_id": user_id},
-            )
-            for c in all_chunks
-        ]
-
-    # Step 6: Enrich metadata (heading, chunk_id, source_file, char/word counts)
+    # Step 5 — Add chunk IDs, headings, word counts.
+    print(f"[pipeline] Enriching metadata for {len(all_chunks)} chunk(s) …")
     enriched = enrich_metadata(all_chunks)
-    print(f"[pipeline] Total enriched chunks ready for embedding: {len(enriched)}")
+    print("[pipeline] Document preparation complete.")
     return enriched
 
 
-def ingest_documents(
-    paths: str | Path | Iterable[str | Path], config: RetrievalConfig = DEFAULT_CONFIG,
-    user_id: str | None = None,
-) -> list[dict]:
-    """Convert, chunk, contextualise, enrich and embed input documents."""
-    enriched_chunks = _prepare_documents(paths, config, user_id=user_id)
-    embeddings = SentenceTransformerEmbedder(config).embed_documents(enriched_chunks)
-    records = make_vector_records(enriched_chunks, embeddings)
-    print("[pipeline] Ingestion completed successfully.")
-    return records
+def ingest_to_qdrant(
+    paths: DocumentPaths,
+    config: RetrievalConfig = DEFAULT_CONFIG,
+    store: QdrantVectorStore | None = None,
+) -> QdrantVectorStore:
+    """Prepare documents and upload their embeddings to Qdrant Cloud.
+
+    This is the main entry point for document indexing.
+
+    Args:
+        paths:  File path(s) to ingest.
+        config: Application configuration.
+        store:  Optional pre-built vector store (uses the singleton if None).
+
+    Returns:
+        The QdrantVectorStore instance that was used.
+    """
+    print("[pipeline] Starting Qdrant document indexing …")
+
+    documents = _prepare_documents(paths, config)
+    vector_store = store if store is not None else get_vector_store(config)
+    vector_store.upsert(documents)
+
+    print(f"[pipeline] Indexed {len(documents)} chunk(s) in Qdrant.")
+    return vector_store
 
 
-def ingest_to_pgvector(
-    paths: str | Path | Iterable[str | Path], config: RetrievalConfig = DEFAULT_CONFIG,
-    user_id: str | None = None,
-    store: PgVectorStore | None = None,
-) -> PgVectorStore:
-    """Ingest source files and persist their contextualised chunks in PostgreSQL pgvector."""
-    print("[pipeline] Preparing PostgreSQL pgvector ingestion.")
-    if not user_id or not user_id.strip():
-        raise ValueError("A user ID is required before documents can be indexed.")
-    documents = _prepare_documents(paths, config, user_id=user_id.strip())
-    store = store or get_vector_store(config)
-    store.upsert(documents)
-    print("[pipeline] PostgreSQL pgvector ingestion completed.")
-    return store
+# ═══════════════════════════════════════════════════════════════
+#  Question answering
+# ═══════════════════════════════════════════════════════════════
 
 
 def answer_question(
     question: str,
-    store: PgVectorStore,
+    store: QdrantVectorStore,
     config: RetrievalConfig = DEFAULT_CONFIG,
     agent: RetrievalAgent | None = None,
-    metadata_filters: dict | None = None,
-    memory: object | None = None,
-    user_id: str | None = None,
-    conversation_context: dict | None = None,
-) -> dict:
-    """Let the cached LLM agent decide whether to retrieve, then answer."""
-    print(f"[pipeline] Routing question: {question[:80]}")
+    metadata_filters: dict[str, Any] | None = None,
+    conversation_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Retrieve relevant chunks and generate a grounded answer.
+
+    Args:
+        question:             The user's question in plain text.
+        store:                The Qdrant vector store to search.
+        config:               Application configuration.
+        agent:                Optional pre-built RetrievalAgent.
+        metadata_filters:     Optional filters (e.g. by source_file).
+        conversation_context: Optional dict with recent chat messages.
+
+    Returns:
+        A dict with keys: answer, citations, retrieved, retrieved_chunks.
+    """
+    print("[pipeline] Starting question-answering …")
+
+    # Lazily create an agent and cache it on the store object.
     if agent is None:
         agent = getattr(store, "_retrieval_agent", None)
         if agent is None:
+            print("[pipeline] Creating the Groq retrieval agent …")
             agent = RetrievalAgent(config)
-            store._retrieval_agent = agent
-    answer = agent.answer(
+            store._retrieval_agent = agent  # type: ignore[attr-defined]
+
+    result = agent.answer(
         question,
         store,
         metadata_filters=metadata_filters,
-        memory=memory,
-        user_id=user_id,
         conversation_context=conversation_context,
     )
-    print("[pipeline] Question answering completed.")
-    return answer
+
+    print("[pipeline] Question-answering complete.")
+    return result

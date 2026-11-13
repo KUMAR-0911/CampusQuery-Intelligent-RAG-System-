@@ -1,0 +1,152 @@
+# CampusQuery: Intelligent RAG System
+
+CampusQuery is an intelligent document-based question answering system for college and campus knowledge management. It ingests documents, stores them in a vector database, retrieves the most relevant sections, and answers user questions using a Groq-powered LLM.
+
+The project combines:
+- Document extraction and preprocessing
+- Semantic chunking and metadata enrichment
+- Embedding generation
+- Vector search with Qdrant
+- Reranking for better retrieval quality
+- LLM-based answer generation with Groq
+- A Streamlit web UI and a FastAPI backend
+
+## Features
+
+- Upload and index supported document types such as PDF, DOCX, TXT, HTML, MD, PPTX, XLSX, and images
+- Semantic retrieval over indexed campus documents
+- Chunk-based, citation-aware answers grounded in source material
+- Multi-turn conversational context support
+- Local document processing pipeline with Docling and LangChain
+- Qdrant-backed vector storage for efficient similarity search
+- Streamlit chat interface and REST API for integration
+
+## Tech Stack
+
+- Python 3.11+
+- FastAPI
+- Streamlit
+- LangChain
+- Sentence Transformers
+- Qdrant
+- Groq LLM
+- Docling
+- Python-dotenv
+
+## Project Structure
+
+```text
+backend/
+├── app.py                 # Streamlit chat interface
+├── main.py                # FastAPI backend API
+├── config.py              # Application configuration
+├── ingest_docs.py         # Batch indexing for docs folder
+├── retrieval_agent.py     # RAG answer generation logic
+├── requirements.txt      # Python dependencies
+├── docs/                 # Documents to index
+├── RETRIVAL/             # Retrieval pipeline modules
+│   ├── chunking.py
+│   ├── cleaning.py
+│   ├── document_loading.py
+│   ├── embedding.py
+│   ├── enrich_metadata.py
+│   ├── pipeline.py
+│   └── qdrantstore.py
+└── README
+```
+
+## Setup
+
+1. Open a terminal in the `backend` directory.
+2. Create and activate a virtual environment:
+
+```powershell
+py -3.11 -m venv .campus
+.campus\Scripts\Activate.ps1
+```
+
+3. Install the required dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+4. Create a `.env` file in the `backend` folder and add your API keys and configuration:
+
+```env
+QDRANT_URL="https://your-qdrant-instance:6333"
+QDRANT_API_KEY="your_qdrant_api_key"
+QDRANT_COLLECTION="campusquery"
+GROQ_API_KEY="your_groq_api_key"
+GROQ_MODEL="llama-3.3-70b-versatile"
+EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
+CHUNK_SIZE=500
+CHUNK_OVERLAP=80
+RETRIEVAL_TOP_K=10
+RERANKER_TOP_N=6
+```
+
+## Usage
+
+### 1. Index documents
+
+Add supported files to the `backend/docs` folder, then run:
+
+```powershell
+python ingest_docs.py
+```
+
+This will process the documents, split them into chunks, embed them, and store them in Qdrant.
+
+### 2. Run the Streamlit app
+
+```powershell
+streamlit run app.py
+```
+
+Open the local URL displayed in the terminal and ask questions about the indexed documents.
+
+### 3. Run the FastAPI backend
+
+```powershell
+uvicorn main:app --reload
+```
+
+The API exposes:
+- `GET /` — service status
+- `GET /health` — health check
+- `POST /upload` — upload and index documents
+- `POST /chat` — ask a question grounded in indexed documents
+
+## Example API Request
+
+```bash
+curl -X POST "http://127.0.0.1:8000/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What are the admission requirements?",
+    "conversation_context": {"recent_messages": []}
+  }'
+```
+
+## How It Works
+
+1. Documents are loaded from the `docs` directory.
+2. Text is cleaned and normalized.
+3. Content is split into manageable chunks.
+4. Chunks are enriched with metadata.
+5. Embeddings are generated and stored in Qdrant.
+6. User queries are embedded and matched against the stored vectors.
+7. Relevant chunks are reranked and sent to the Groq model.
+8. The model responds with a grounded answer and citations.
+
+## Notes
+
+- The project is designed for campus or institutional document retrieval use cases.
+- You can replace the default document set with university policies, course information, notices, student guides, or academic resources.
+- Ensure your Qdrant instance and Groq API key are configured before running the app.
+
+## License
+
+This project is for educational and internal use. Add your preferred license here if you plan to share or publish it.
+

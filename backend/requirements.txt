@@ -1,23 +1,31 @@
-fastapi
-uvicorn
-python-dotenv
-passlib[bcrypt]
-bcrypt
-pyjwt
-python-multipart
-requests
-pypdf
-langchain-core
-langchain-text-splitters
-langchain-openai
-groq
-portkey-ai
-huggingface-hub
-psycopg2-binary
-sqlalchemy
-pgvector
-argon2-cffi
-email-validator
-logfire[fastapi]
-numpy
-
+# ─────────────────────────────────────────────────────────────
+#  CampusQuery RAG — Python Dependencies
+# ─────────────────────────────────────────────────────────────
+#  Install with:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────
+
+# ── Document extraction ─────────────────────────────────────
+docling                    # IBM's deep-learning document parser (PDF, DOCX, …)
+
+# ── Text processing ─────────────────────────────────────────
+langchain-core             # LangChain base classes (Document, messages, etc.)
+langchain-text-splitters   # Recursive text chunking
+
+# ── Embeddings ──────────────────────────────────────────────
+sentence-transformers      # Local embedding models (all-MiniLM-L6-v2, etc.)
+
+# ── Vector database ─────────────────────────────────────────
+qdrant-client>=1.10        # Qdrant Cloud Python client
+
+# ── LLM (answer generation) ────────────────────────────────
+langchain-groq             # LangChain ↔ Groq integration
+
+# ── Web interfaces ──────────────────────────────────────────
+fastapi                    # REST API framework
+uvicorn[standard]          # ASGI server for FastAPI
+streamlit                  # Interactive chat UI
+pydantic                   # Request/response validation
+python-multipart           # File upload support for FastAPI
+
+# ── Utilities ───────────────────────────────────────────────
+python-dotenv              # Load .env files into os.environ

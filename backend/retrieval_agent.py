@@ -1,423 +1,363 @@
-"""Direct RAG pipeline for CampusQuery: Query Rewriting -> Direct Retrieval -> Reasoning Model Answer Generation."""
+"""
+retrieval_agent.py — Retrieve relevant chunks, then ask Groq for an answer.
+
+HOW THE RAG ANSWER IS BUILT
+────────────────────────────
+1. RETRIEVE  — Embed the user's question and find the closest chunks
+               in Qdrant (semantic search).
+2. CONTEXT   — Format those chunks into a block of text the LLM can read.
+3. GENERATE  — Send the system prompt + context + question to the Groq
+               LLM and get back a grounded answer.
+4. PACKAGE   — Return the answer, citations, and raw chunks to the caller.
+
+CONFIGURATION
+─────────────
+  GROQ_API_KEY  — Your Groq API key (set in .env).
+  GROQ_MODEL    — Which model to use (default: llama-3.3-70b-versatile).
+"""
 
 from __future__ import annotations
 
-import collections
-import json
-import re
-import threading
+import logging
 from typing import Any
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
 from config import RetrievalConfig
-from RETRIVAL.pgvectorstore import PgVectorStore
+from RETRIVAL.qdrantstore import QdrantVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalAgent:
-    """Sequential RAG pipeline: Query Rewriter -> Direct Retrieval Function -> Reasoning Answer Model."""
+    """Three-stage RAG agent: retrieve → build context → generate answer."""
+
+    # ── Initialisation ──────────────────────────────────────────
 
     def __init__(self, config: RetrievalConfig) -> None:
-        if not config.portkey_api_key:
-            raise ValueError("Set PORTKEY_API_KEY in .env before using the retrieval agent.")
+        """Create the Groq LLM client.
 
-        if not config.portkey_config_slug:
-            raise ValueError(
-                "Set PORTKEY_CONFIG_SLUG to the saved Portkey config slug, "
-                "for example pc-xxxxxxxx."
-            )
+        Args:
+            config: Must include a valid groq_api_key and groq_model.
+
+        Raises:
+            ValueError:  If GROQ_API_KEY is not set.
+            ImportError:  If langchain-groq is not installed.
+        """
+        if not config.groq_api_key:
+            raise ValueError("Set GROQ_API_KEY in the backend .env file.")
 
         try:
-            from langchain_openai import ChatOpenAI
-        except ImportError as exc:
+            from langchain_groq import ChatGroq
+        except ImportError as error:
             raise ImportError(
-                "Install LangChain OpenAI integration with pip install -r requirements.txt"
-            ) from exc
+                "The 'langchain-groq' package is required.\n"
+                "Install it with:  pip install langchain-groq"
+            ) from error
 
         self.config = config
-        self._last_retrieved_chunks: list[dict[str, Any]] = []
-        self._rewrite_cache: collections.OrderedDict[str, dict[str, str]] = collections.OrderedDict()
-        self._rewrite_cache_lock = threading.Lock()
-        self._rewrite_cache_maxsize = 256
-
-
-        raw_model = config.groq_model or "qwen3:32b-a3b"
-        if "qwen3" in raw_model.lower() and ("32b" in raw_model.lower() or "30b" in raw_model.lower()):
-            resolved_model = "qwen/qwen3-30b-a3b"
-        else:
-            resolved_model = raw_model
-
-        # Reasoning & answer generation model via Portkey / Groq
-        self.llm = ChatOpenAI(
-            model=resolved_model,
-            api_key=config.portkey_api_key,
-            base_url="https://api.portkey.ai/v1",
-            default_headers={
-                "x-portkey-config": config.portkey_config_slug
-            },
+        self.llm = ChatGroq(
+            model=config.groq_model,
+            groq_api_key=config.groq_api_key,
             temperature=0.1,
         )
+        self.reranker = None
 
-        self.query_rewriter_model = getattr(config, "query_rewriter_model", "Qwen/Qwen3-0.6B")
-        self.query_rewriter_provider = getattr(config, "query_rewriter_provider", "featherless-ai")
-        self._hf_rewriter_client = None
-        rewriter_token = getattr(config, "hf_query_rewriter_token", None) or config.hf_token
-        if rewriter_token:
-            try:
-                from huggingface_hub import InferenceClient
-                client_kwargs = {"token": rewriter_token, "model": self.query_rewriter_model}
-                provider_choice = self.query_rewriter_provider or getattr(config, "hf_inference_provider", None)
-                if provider_choice:
-                    client_kwargs["provider"] = provider_choice
-                self._hf_rewriter_client = InferenceClient(**client_kwargs)
-                print(f"[pipeline] Initialized Hugging Face query rewriter: {self.query_rewriter_model} (provider={client_kwargs.get('provider')})")
-            except Exception as e:
-                print(f"[pipeline] Notice: Could not initialize HF rewriter client: {e}")
-
-        print(f"[pipeline] Direct Retrieval Pipeline initialized with reasoning model: {config.groq_model}")
+        print(f"[agent] Ready — using Groq model '{config.groq_model}'.")
+        logger.info("Groq model initialised: %s", config.groq_model)
 
     def preload(self) -> None:
-        """Eagerly prewarm reasoning LLM client and query rewriter on application startup."""
-        try:
-            if hasattr(self, "_hf_rewriter_client") and self._hf_rewriter_client:
-                print(f"[pipeline] Query rewriter client preloaded: {self.query_rewriter_model}")
-            if hasattr(self, "llm") and self.llm:
-                print(f"[pipeline] Reasoning model client preloaded: {self.config.groq_model}")
-        except Exception as exc:
-            print(f"[pipeline] Preload notice: {exc}")
+        """No-op — the LLM client is ready after __init__."""
+        print(f"[agent] Groq model '{self.config.groq_model}' is ready.")
 
-    def rewrite_and_classify(
-        self,
-        question: str,
-        conversation_context: dict[str, Any] | None = None,
-    ) -> dict[str, str]:
-        """Classify user intent and rewrite the query into an evidence-seeking, context-aware query using Qwen3."""
-        history_str = ""
-        summary_str = ""
-        recent_count = 0
-        
-        if conversation_context:
-            summary = str(conversation_context.get("summary", "")).strip()
-            if summary:
-                summary_str = f"User Profile & Conversation Memory:\n{summary}\n\n"
-            
-            recent = conversation_context.get("recent_messages", [])[-6:]
-            recent_count = len(recent)
-            if recent:
-                lines = []
-                for m in recent:
-                    role = str(m.get("role", "user")).capitalize()
-                    content = str(m.get("content", "")).strip()
-                    if content:
-                        lines.append(f"{role}: {content}")
-                if lines:
-                    history_str = "Recent Conversation History:\n" + "\n".join(lines) + "\n\n"
-
-        prompt = (
-            f"{self.config.query_rewriter_prompt}\n\n"
-            f"{summary_str}"
-            f"{history_str}"
-            f"Current User Question: {question}\n\n"
-            f"CONTEXT-AWARE INSTRUCTION: Analyze the current question in light of the conversation history and memory above. "
-            f"Resolve any pronouns (it, they, that, my, those) and implicit references. "
-            f"Produce a standalone, keyword-rich retrieval query for matching against resume sections.\n\n"
-            f"Output JSON:"
-        )
-
-        can_cache = not summary_str and not history_str
-        clean_q = question.strip().lower()
-
-        if can_cache:
-            with self._rewrite_cache_lock:
-                if clean_q in self._rewrite_cache:
-                    self._rewrite_cache.move_to_end(clean_q)
-                    return dict(self._rewrite_cache[clean_q])
-
-        print(f"[rewrite] Context-Aware Query Rewriting: {recent_count} recent turns, {len(summary_str)} chars profile memory.")
-
-        raw = None
-        # 1. Attempt query rewriting with Qwen/Qwen3-0.6B via Hugging Face
-        if self._hf_rewriter_client is not None:
-            try:
-                hf_res = self._hf_rewriter_client.chat_completion(
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=600,
-                    temperature=0.1,
-                )
-                msg = hf_res.choices[0].message
-                content_text = (msg.content or "").strip()
-                if not content_text and hasattr(msg, "reasoning") and msg.reasoning:
-                    content_text = str(msg.reasoning).strip()
-                if content_text:
-                    raw = content_text
-                    print(f"[rewrite] Successfully used {self.query_rewriter_model} for query rewrite.")
-            except Exception as hf_err:
-                print(f"[rewrite] Hugging Face {self.query_rewriter_model} attempt notice: {hf_err}. Falling back to primary LLM.")
-
-        # 2. Fallback to primary LLM if Hugging Face was unavailable or returned empty
-        if not raw:
-            try:
-                response = self.llm.invoke([{"role": "user", "content": prompt}])
-                raw = response.content if hasattr(response, "content") else str(response)
-            except Exception as e:
-                print(f"[rewrite] Primary LLM rewrite failed: {e}")
-
-        final_res = {"intent": "TARGETED", "rewritten_query": question}
-        if raw:
-            match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group(0))
-                    intent = data.get("intent", "TARGETED").strip().upper()
-                    rewritten_query = data.get("rewritten_query", question).strip()
-                    if intent not in ["TARGETED", "SKILL_GAP", "RESUME_SCORE"]:
-                        intent = "TARGETED"
-                    final_res = {"intent": intent, "rewritten_query": rewritten_query}
-                except Exception as parse_err:
-                    print(f"[rewrite] JSON parse error: {parse_err}")
-
-        if can_cache:
-            with self._rewrite_cache_lock:
-                if len(self._rewrite_cache) >= self._rewrite_cache_maxsize and clean_q not in self._rewrite_cache:
-                    self._rewrite_cache.popitem(last=False)
-                self._rewrite_cache[clean_q] = dict(final_res)
-
-        return final_res
-
+    # ── Stage 1: Retrieve ───────────────────────────────────────
 
     def retrieve_documents(
         self,
         query: str,
-        store: PgVectorStore,
-        intent: str = "TARGETED",
+        store: QdrantVectorStore,
         metadata_filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Direct retrieval function call to PgVectorStore with intent-tuned parameters."""
-        print("[retrieval] ============================================")
-        print(f"[retrieval] Direct function call with Query: {query}")
-        print(f"[retrieval] Classified Intent: {intent}")
+        """Search Qdrant for chunks relevant to the query.
 
-        intent_clean = (intent or "TARGETED").strip().upper()
-        if intent_clean == "TARGETED":
-            top_k = 5
-            rerank_top_n = 10
-        elif intent_clean == "SKILL_GAP":
-            top_k = 10
-            rerank_top_n = 20
-        elif intent_clean == "RESUME_SCORE":
-            top_k = 20
-            rerank_top_n = 40
-        else:
-            top_k = self.config.top_k
-            rerank_top_n = self.config.rerank_top_n
+        Duplicates (by chunk ID) are removed.
 
-        print(f"[retrieval] Applied parameters: top_k={top_k}, rerank_top_n={rerank_top_n}")
+        Args:
+            query:            The user's question.
+            store:            The Qdrant vector store to search.
+            metadata_filters: Optional filters to narrow the search.
+
+        Returns:
+            A de-duplicated list of chunk dicts.
+        """
+        print(f"[agent] Searching for relevant chunks …")
 
         raw_chunks = store.search(
             query,
             metadata_filters=metadata_filters,
-            top_k=top_k,
-            rerank_top_n=rerank_top_n,
+            top_k=self.config.top_k,
         )
 
-        # Deduplicate chunks
+        # De-duplicate by chunk ID.
         unique_chunks: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
+
         for chunk in raw_chunks:
-            metadata = chunk.get("metadata", {})
-            chunk_id = str(chunk.get("id", metadata.get("id", chunk.get("text", ""))))
+            metadata = chunk.get("metadata") or {}
+            chunk_id = str(
+                chunk.get("id", metadata.get("id", chunk.get("text", "")))
+            )
             if chunk_id not in seen_ids:
                 seen_ids.add(chunk_id)
                 unique_chunks.append(chunk)
 
-        print(f"\n[retrieval] ==================== [RETRIEVED DOCUMENT CHUNKS ({len(unique_chunks)})] ====================")
-        for i, chunk in enumerate(unique_chunks, 1):
-            meta = chunk.get("metadata", {})
-            src = meta.get("source_file") or meta.get("source") or "document"
-            sig_score = float(chunk.get("rerank_score", 0.0))
-            raw_logit = float(chunk.get("raw_score", sig_score))
-            heading = chunk.get("heading") or meta.get("heading") or meta.get("title") or meta.get("section") or f"Section {i}"
-            print(f"--- [Chunk {i}] Heading: {heading} | Source: {src} | ID: {chunk.get('id')} ---")
-            print(f"    Relevance (Sigmoid): {sig_score:.4f} | Raw Logit: {raw_logit:+.4f}")
-            print(f"    Content:")
-            for line in chunk.get("text", "").strip().splitlines():
-                print(f"      {line}")
-            print()
-        print("[retrieval] =============================================================================\n")
+        print(f"[agent] Retrieved {len(unique_chunks)} unique chunk(s).")
+        logger.info("Retrieved %d unique chunks", len(unique_chunks))
         return unique_chunks
 
-    @staticmethod
-    def _clean_output_text(text: str) -> str:
-        """Thoroughly strip all *, #, --, citations, unnecessary divider symbols, and eliminate blank lines between paragraphs."""
-        if not text:
-            return ""
-        # 0. Strip citation markers and references ([1], [Source: ...], [Document Chunk 1])
-        cleaned = re.sub(r'\[\d+\]', '', text)
-        cleaned = re.sub(r'\[Document Chunk\s*\d*.*?\]', '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\[Source:?.*?\]', '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\[\s*filename.*?\s*\]', '', cleaned, flags=re.IGNORECASE)
-        # Strip trailing citations or sources section
-        cleaned = re.sub(r'(?i)(^|\n)(citations?|sources?):\s*[\s\S]*$', '', cleaned)
-        # 1. Strip markdown headings (# Title -> Title)
-        cleaned = re.sub(r'(?m)^[ \t]*#{1,6}[ \t]*', '', cleaned)
-        # 2. Strip all # characters anywhere in the response
-        cleaned = cleaned.replace('#', '')
-        # 3. Strip bold / italic asterisks (**text** or *text* -> text)
-        cleaned = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', cleaned)
-        # 4. Strip bullet asterisks at line starts (* item -> item) and any remaining *
-        cleaned = re.sub(r'(?m)^[ \t]*\*[ \t]+', '', cleaned)
-        cleaned = cleaned.replace('*', '')
-        # 5. Strip horizontal rules / dividers (---, ---, etc.)
-        cleaned = re.sub(r'(?m)^[ \t]*-{2,}[ \t]*$', '', cleaned)
-        # 6. Strip double hyphens (-- or --- or more) anywhere in the text
-        cleaned = re.sub(r'-{2,}', '', cleaned)
-        # 7. Replace unicode dashes (em-dash, en-dash) with a space
-        cleaned = cleaned.replace('—', ' ').replace('–', ' ')
-        # 8. Strip leading bullet dashes (- item -> item) if followed by space
-        cleaned = re.sub(r'(?m)^[ \t]*-[ \t]+', '', cleaned)
-        # 9. Clean horizontal spacing on each line and remove empty blank lines
-        lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in cleaned.splitlines()]
-        non_empty_lines = [line for line in lines if line]
-        cleaned = '\n'.join(non_empty_lines)
-        return cleaned.strip()
+    # ── Stage 2 + 3: Build context and generate answer ──────────
 
     def answer(
         self,
         question: str,
-        store: PgVectorStore,
+        store: QdrantVectorStore,
         metadata_filters: dict[str, Any] | None = None,
-        memory: Any | None = None,
-        user_id: str | None = None,
         conversation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute Direct RAG: Query Rewriting & Intent Detection -> Direct Retrieval Function -> Reasoning Model."""
+        """Full RAG pipeline: retrieve → context → generate → package.
 
-        print("\n==================== [RAG PIPELINE START] ====================")
-        print(f"[pipeline] Original user question: \"{question}\"")
+        Args:
+            question:             The user's question.
+            store:                Qdrant vector store.
+            metadata_filters:     Optional search filters.
+            conversation_context: Optional dict with 'summary' and
+                                  'recent_messages' for multi-turn chat.
 
-        if conversation_context is None and memory is not None and user_id:
-            conversation_context = memory.context_for(user_id)
-
-        # Step 1: PRE-RETRIEVAL: Query Rewriting Model & Intent Detection
-        print(f"[pipeline:step-1] PRE-RETRIEVAL: Invoking Query Rewriter & Intent Detector ({self.query_rewriter_model} on {self.query_rewriter_provider})...")
-        analysis = self.rewrite_and_classify(question, conversation_context=conversation_context)
-        intent = analysis["intent"]
-        rewritten_query = analysis["rewritten_query"]
-        print(f"[pipeline:step-1] PRE-RETRIEVAL: Detected Intent: {intent}")
-        print(f"[pipeline:step-1] PRE-RETRIEVAL: Rewritten Query: \"{rewritten_query}\"")
-
-        # Step 2: RETRIEVAL: Direct Retrieval Function Call with rewritten query & intent tuning
-        print(f"[pipeline:step-2] RETRIEVAL: Executing direct retrieval & Cross-Encoder reranker...")
+        Returns:
+            A dict with: answer, citations, retrieved (bool),
+            retrieved_chunks (list).
+        """
+        print("[agent] ── Stage 1/3: Retrieve ──")
         chunks = self.retrieve_documents(
-            rewritten_query,
-            store=store,
-            intent=intent,
-            metadata_filters=metadata_filters,
+            question, store=store, metadata_filters=metadata_filters,
         )
-        self._last_retrieved_chunks = chunks
-        print(f"[pipeline:step-2] RETRIEVAL: Selected top {len(chunks)} grounded chunk(s) for answer reasoning.")
+        self._print_chunk_previews("Before reranking", chunks, "similarity_score")
+        chunks = self._rerank_documents(question, chunks)
+        self._print_chunk_previews("After reranking", chunks, "rerank_score")
 
-        # Step 3: Reasoning Model (Answer Generation)
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+        # ── Build the document context block ────────────────
+        print("[agent] ── Stage 2/3: Build context ──")
+        retrieved_context = self._format_context(chunks)
 
-        # Build retrieved document context
-        if chunks:
-            context_blocks = []
-            for i, chunk in enumerate(chunks, 1):
-                meta = chunk.get("metadata", {})
-                source_name = meta.get("source_file") or meta.get("source") or "uploaded document"
-                score = chunk.get("rerank_score", 0.0)
-                chunk_text = chunk.get("text", "").strip()
-                context_blocks.append(f"[Document Chunk {i} | Source: {source_name} | Rerank Score: {score:.4f}]\n{chunk_text}")
-            retrieved_context_str = "RETRIEVED DOCUMENT CONTEXT:\n" + "\n\n".join(context_blocks)
-        else:
-            retrieved_context_str = (
-                "RETRIEVED DOCUMENT CONTEXT:\n"
-                "[No relevant document chunks found in vector database. "
-                "If the user is asking about their resume, job description, or document analysis, "
-                "politely inform them that no document has been uploaded yet, and invite them to upload their resume.]"
-            )
+        # ── Assemble the LLM message list ───────────────────
+        messages: list[SystemMessage | HumanMessage | AIMessage] = [
+            SystemMessage(content=self.config.system_prompt),
+        ]
 
-        messages: list[Any] = []
-
-        # System prompt with strict constraint against *, #, and --
-        messages.append(SystemMessage(content=self.config.system_prompt))
-
-        # Persistent user memory / profile
+        # Add conversation history (multi-turn support).
         profile_context = ""
         if conversation_context:
-            summary = conversation_context.get("summary", "").strip()
+            summary = (conversation_context.get("summary") or "").strip()
             if summary:
-                profile_context = f"PERSISTENT USER PROFILE AND MEMORY:\n{summary}\n\n"
-                print(f"[pipeline:step-3] Injected persistent memory profile ({len(summary)} chars)")
+                profile_context = (
+                    f"PERSISTENT USER PROFILE AND MEMORY:\n{summary}\n\n"
+                )
 
-        # Conversation turns for multi-turn awareness
-        if conversation_context:
-            # The user requested exactly the last 2 user and 2 assistant messages (last 4 messages)
-            recent = conversation_context.get("recent_messages", [])[-4:]
-            for m in recent:
-                role = m.get("role")
-                content = m.get("content", "")
+            # Replay the last 4 messages so the LLM knows the conversation.
+            recent = (conversation_context.get("recent_messages") or [])[-4:]
+            for msg in recent:
+                role = msg.get("role")
+                content = msg.get("content", "")
                 if role == "user":
                     messages.append(HumanMessage(content=content))
                 elif role == "assistant":
                     messages.append(AIMessage(content=content))
-            if recent:
-                print(f"[pipeline:step-3] Injected {len(recent)} recent conversational turn(s)")
 
-        # Grounded reasoning user prompt
-        user_message_content = (
+        # Final user message: profile + context + question + instructions.
+        user_message = (
             f"{profile_context}"
-            f"{retrieved_context_str}\n\n"
+            f"{retrieved_context}\n\n"
             f"USER QUESTION: {question}\n\n"
-            f"Instruction for reasoning and answer generation:\n"
-            f"Directly and concisely answer the specific question asked above using the retrieved document context. Do NOT use a generic or repeated fixed template for every question. Answer only what is relevant to the question, with no blank lines between paragraphs, and adhere to all system prompt formatting rules."
+            "Instruction for reasoning and answer generation:\n"
+            "Directly and concisely answer the question using the retrieved "
+            "context. Avoid a repeated template, include only relevant "
+            "details, use no blank lines between paragraphs, and follow "
+            "the system prompt's formatting rules."
         )
-        messages.append(HumanMessage(content=user_message_content))
+        messages.append(HumanMessage(content=user_message))
 
-        print(f"[pipeline:step-3] Invoking Reasoning Model: {self.llm.model_name} via Portkey Gateway...")
+        # ── Call the Groq LLM ───────────────────────────────
+        print(f"[agent] ── Stage 3/3: Generate answer via "
+              f"'{self.config.groq_model}' ──")
+        logger.info("Generating answer with %s", self.config.groq_model)
+
         try:
             response = self.llm.invoke(messages)
-            content = getattr(response, "content", "")
-            if isinstance(content, list):
-                answer = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-            else:
-                answer = str(content)
-            print(f"[pipeline:step-3] Raw answer received from {self.llm.model_name} ({len(answer)} chars).")
-        except Exception as exc:
-            print(f"[pipeline:step-3] Reasoning model generation error: {exc}")
-            answer = "I encountered an error generating the answer. Please try again."
+            answer = self._extract_text(response)
+            print(f"[agent] Received answer ({len(answer)} chars).")
+        except Exception as error:
+            print(f"[agent] Groq generation failed: {error}")
+            raise RuntimeError(
+                f"Groq answer generation failed: {error}"
+            ) from error
 
-        # Clean all markdown headings (#), asterisks (*, **), double hyphens (--), and dividers
-        answer = self._clean_output_text(answer)
-        print(f"[pipeline:step-3] Post-processed answer (stripped #, *, --). Final length: {len(answer)} chars.")
+        # ── Package the result ──────────────────────────────
+        result = {
+            "answer":           answer,
+            "citations":        self._build_citations(chunks),
+            "retrieved":        bool(chunks),
+            "retrieved_chunks": self._serialise_chunks(chunks),
+        }
+        print("[agent] All stages complete.")
+        return result
 
-        citations = list(dict.fromkeys(
-            chunk.get("metadata", {}).get("source_file") or chunk.get("metadata", {}).get("source", "")
+    # ── Private helpers ─────────────────────────────────────────
+
+    def _rerank_documents(
+        self,
+        query: str,
+        chunks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Score candidate chunks locally and keep the highest-ranked ones."""
+        if not chunks:
+            return []
+
+        if self.reranker is None:
+            from sentence_transformers import CrossEncoder
+
+            print(
+                f"[agent] Loading local reranker '{self.config.reranker_model}' "
+                f"on {self.config.reranker_device} …"
+            )
+            self.reranker = CrossEncoder(
+                self.config.reranker_model,
+                max_length=512,
+                device=self.config.reranker_device,
+            )
+
+        pairs = [(query, str(chunk.get("text", ""))) for chunk in chunks]
+        scores = self.reranker.predict(pairs, show_progress_bar=False)
+        ranked_chunks = []
+        for chunk, score in zip(chunks, scores):
+            ranked_chunk = dict(chunk)
+            ranked_chunk["rerank_score"] = float(score)
+            ranked_chunks.append(ranked_chunk)
+
+        ranked_chunks.sort(
+            key=lambda chunk: chunk["rerank_score"],
+            reverse=True,
+        )
+        return ranked_chunks[:self.config.reranker_top_n]
+
+    @staticmethod
+    def _print_chunk_previews(
+        stage: str,
+        chunks: list[dict[str, Any]],
+        score_key: str,
+    ) -> None:
+        """Print each chunk's rank and a short text preview to the console."""
+        print(f"[agent] {stage}: {len(chunks)} chunk(s)")
+        for index, chunk in enumerate(chunks, start=1):
+            text = " ".join(str(chunk.get("text", "")).split())
+            preview = text[:180] + ("..." if len(text) > 180 else "")
+            print(
+                f"  {index}. id={chunk.get('id', 'unknown')} "
+                f"score={chunk.get(score_key, 0.0)}"
+            )
+            print(f"     {preview}")
+
+    @staticmethod
+    def _format_context(chunks: list[dict[str, Any]]) -> str:
+        """Turn a list of chunk dicts into a labelled text block."""
+        if not chunks:
+            return (
+                "RETRIEVED DOCUMENT CONTEXT:\n"
+                "[No relevant document chunks found in the vector database. "
+                "Politely tell the user that no relevant content was found "
+                "and invite them to upload a document.]"
+            )
+
+        blocks = []
+        for i, chunk in enumerate(chunks, start=1):
+            meta = chunk.get("metadata") or {}
+            source = (
+                meta.get("source_file")
+                or meta.get("source")
+                or "uploaded document"
+            )
+            score = chunk.get("similarity_score", 0.0)
+            text = chunk.get("text", "").strip()
+            document_date = meta.get("document_date")
+            date_source = meta.get("document_date_source", "unknown")
+            mentioned_dates = meta.get("dates_mentioned") or []
+            date_context = (
+                f"\nDocument date: {document_date} ({date_source})"
+                if document_date else ""
+            )
+            if mentioned_dates:
+                if isinstance(mentioned_dates, str):
+                    mentioned_dates = [mentioned_dates]
+                date_context += (
+                    f"\nDates mentioned: {', '.join(mentioned_dates)}"
+                )
+            blocks.append(
+                f"[Document Chunk {i} | Source: {source} | "
+                f"Similarity: {score:.4f}]{date_context}\n{text}"
+            )
+
+        return "RETRIEVED DOCUMENT CONTEXT:\n" + "\n\n".join(blocks)
+
+    @staticmethod
+    def _extract_text(response: Any) -> str:
+        """Pull the plain-text answer out of a LangChain response object."""
+        content = getattr(response, "content", "")
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict)
+            )
+        return str(content)
+
+    @staticmethod
+    def _build_citations(chunks: list[dict[str, Any]]) -> list[str]:
+        """Extract a unique, ordered list of source filenames."""
+        return list(dict.fromkeys(
+            (chunk.get("metadata") or {}).get("source_file")
+            or (chunk.get("metadata") or {}).get("source", "")
             for chunk in chunks
-            if chunk.get("metadata", {}).get("source_file") or chunk.get("metadata", {}).get("source")
+            if (chunk.get("metadata") or {}).get("source_file")
+            or (chunk.get("metadata") or {}).get("source")
         ))
 
-        print(f"[pipeline] Completed pipeline answer generation ({len(chunks)} chunks retrieved, {len(citations)} citations).")
-        print("==================== [RAG PIPELINE END] ====================\n")
-
-        serialized_chunks = []
-        for c in chunks:
-            sig_score = float(c.get("rerank_score", 0.0))
-            raw_logit = float(c.get("raw_score", sig_score))
-            meta = c.get("metadata", {})
-            heading = c.get("heading") or meta.get("heading") or meta.get("title") or meta.get("section") or "Section"
-            serialized_chunks.append({
-                "id": str(c.get("id", "")),
-                "text": str(c.get("text", "")),
-                "rerank_score": sig_score,
-                "raw_score": raw_logit,
-                "heading": str(heading),
-                "source": str(meta.get("source_file") or meta.get("source") or "document"),
-                "metadata": {k: str(v) for k, v in meta.items() if k not in ["embedding"]},
+    @staticmethod
+    def _serialise_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert raw chunk dicts into a clean JSON-serialisable format."""
+        serialised = []
+        for chunk in chunks:
+            meta = chunk.get("metadata") or {}
+            score = float(chunk.get("similarity_score",
+                                    chunk.get("rerank_score", 0.0)))
+            rerank_score = float(chunk.get("rerank_score", score))
+            heading = (
+                chunk.get("heading")
+                or meta.get("heading")
+                or meta.get("title")
+                or meta.get("section")
+                or "Section"
+            )
+            serialised.append({
+                "id":               str(chunk.get("id", "")),
+                "text":             str(chunk.get("text", "")),
+                "similarity_score": score,
+                "rerank_score":     rerank_score,
+                "raw_score":        score,
+                "heading":          str(heading),
+                "source":           str(
+                    meta.get("source_file") or meta.get("source") or "document"
+                ),
+                "metadata": {
+                    k: str(v) for k, v in meta.items() if k != "embedding"
+                },
             })
-
-        return {
-            "answer": answer,
-            "citations": citations,
-            "retrieved": bool(chunks),
-            "retrieved_chunks": serialized_chunks,
-        }
+        return serialised
