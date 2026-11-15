@@ -141,9 +141,7 @@ class RetrievalAgent:
         chunks = self.retrieve_documents(
             question, store=store, metadata_filters=metadata_filters,
         )
-        self._print_chunk_previews("Before reranking", chunks, "similarity_score")
-        chunks = self._rerank_documents(question, chunks)
-        self._print_chunk_previews("After reranking", chunks, "rerank_score")
+        self._print_chunk_previews("Retrieved chunks", chunks, "similarity_score")
 
         # ── Build the document context block ────────────────
         print("[agent] ── Stage 2/3: Build context ──")

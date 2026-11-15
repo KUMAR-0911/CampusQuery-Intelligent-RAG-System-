@@ -19,6 +19,9 @@ qdrant-client>=1.10        # Qdrant Cloud Python client
 
 # ── LLM (answer generation) ────────────────────────────────
 langchain-groq             # LangChain ↔ Groq integration
+langchain-openai           # OpenAI-compatible xAI judge client
+langsmith                  # Dataset and experiment tracking
+openevals                  # LLM-as-judge evaluators
 
 # ── Web interfaces ──────────────────────────────────────────
 fastapi                    # REST API framework
